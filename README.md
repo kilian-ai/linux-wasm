@@ -72,21 +72,21 @@ There are two containers:
 * **linux-wasm-contained**: Actually builds everything into the container. Meant as a dispoable way to build everything isolated.
 
 Create the containers:
-```
+```bash
 docker build -t linux-wasm-base:dev ./docker/linux-wasm-base
-docker build -t linux-wasm-contained:dev ./docker/linux-wasm-contained
+docker build -t linux-wasm-contained:dev -f ./docker/linux-wasm-contained/Dockerfile .
 ```
 Note that the latter command will copy linux-wasm.sh, in its current state, into the container.
 
 To launch a simple docker container with a mapping to host (recommended for development):
-```
+```bash
 docker run -it --name my-linux-wasm --mount type=bind,src="$(pwd)",target=/linux-wasm linux-wasm-base:dev bash
 (Inside the bash prompt, run for example:) /linux-wasm/linux-wasm.sh all
 ```
 
 To actually build everything inside the container (mostly useful for build servers):
-```
-docker run -it -name full-linux-wasm linux-wasm-contained:dev /linux-wasm/linux-wasm.sh all
+```bash
+docker run -it --name full-linux-wasm linux-wasm-contained:dev /linux-wasm/linux-wasm.sh all
 ```
 
 To change workspace folder, docker run -e LW_WORKSPACE=/path/to/workspace ...blah... can be used. This may be useful together with docker volumes.
