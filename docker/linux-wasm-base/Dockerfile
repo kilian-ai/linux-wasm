@@ -14,3 +14,8 @@ RUN apt update && \
     apt install -y kitware-archive-keyring && \
     apt install -y build-essential git cmake ninja-build python3 flex bison bc rsync cpio && \
     rm -rf /var/lib/apt/lists/*
+
+# Prevent git asking for user
+# Corresponds to:
+RUN git config --system user.email "you@example.com"
+RUN git config --system user.name "Your Name"
