@@ -12,5 +12,5 @@ RUN apt update && \
     apt update && \
     test -f /usr/share/doc/kitware-archive-keyring/copyright || rm /usr/share/keyrings/kitware-archive-keyring.gpg && \
     apt install -y kitware-archive-keyring && \
-    apt install -y build-essential git cmake ninja-build && \
+    apt install -y build-essential git cmake ninja-build python3 flex bison bc rsync cpio && \
     rm -rf /var/lib/apt/lists/*
