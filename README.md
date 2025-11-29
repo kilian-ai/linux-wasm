@@ -27,7 +27,7 @@ The project is built and assembled from following pieces of software:
         * A hack patch (minimal and incorrect) that:
             * Adds Wasm as a target to musl (I guessed and cheated a lot on this one).
             * Allows musl to be built using clang and wasm-ld (linker script support may be needed).
-    * Atifacts: musl libc
+    * Artifacts: musl libc
     * Dependencies: clang, wasm-ld, compiler-rt
 * Linux kernel headers for BusyBox
     * Base version: from the kernel
@@ -39,13 +39,13 @@ The project is built and assembled from following pieces of software:
     * Base version: 1.36.1
     * Patches:
         * A hack patch (minimal and incomplete) that:
-            * Allows BuxyBox to be built using clang and wasm-ld (linker script support might be unnecessary).
+            * Allows BusyBox to be built using clang and wasm-ld (linker script support might be unnecessary).
             * Adds a Wasm defconfig.
     * Artifacts: BusyBox installation (base binary and symlinks for ls, cat, mv etc.)
     * Dependencies: musl libc, modified headers for BusyBox
 * A minimal initramfs:
     * Notes:
-        * Packages up the busybox installation into a compessed cpio archive.
+        * Packages up the busybox installation into a compressed cpio archive.
         * It sets up a pty for you (for proper signal/session/job management) and drops you into a shell.
     * Artifacts: initramfs.cpio.gz
     * Dependencies: BusyBox installation
@@ -69,7 +69,7 @@ The following commands should be executed in this repo root.
 
 There are two containers:
 * **linux-wasm-base**: Contains an Ubuntu 20.04 environment with all tools installed for building (e.g. cmake, gcc etc.).
-* **linux-wasm-contained**: Actually builds everything into the container. Meant as a dispoable way to build everything isolated.
+* **linux-wasm-contained**: Actually builds everything into the container. Meant as a disposable way to build everything isolated.
 
 Create the containers:
 ```
