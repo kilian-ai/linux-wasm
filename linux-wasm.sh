@@ -32,44 +32,30 @@ LW_BUILD="$(realpath -sm "$LW_BUILD")"
 : "${LW_INSTALL:=$LW_WORKSPACE/install}"
 LW_INSTALL="$(realpath -sm "$LW_INSTALL")"
 
-# Flags used with git. --depth 1 is recommended to avoid downloading a lot of history.
-: "${LW_GITFLAGS:=--depth 1}"
-
-# Parallel build jobs. Unfortunately not as simple as one number in reality. These are rather conservative.
-: "${LW_JOBS_LLVM_LINK:=1}"
-: "${LW_JOBS_LLVM_COMPILE:=3}"
-: "${LW_JOBS_KERNEL_COMPILE:=8}"
-: "${LW_JOBS_MUSL_COMPILE:=8}"
-: "${LW_JOBS_BUSYBOX_COMPILE:=8}"
+# Parallel build jobs. Unfortunately not as simple as one number in reality.
+: "${LW_JOBS_LLVM_LINK:=2}"
+: "${LW_JOBS_LLVM_COMPILE:=16}"
+: "${LW_JOBS_KERNEL_COMPILE:=16}"
+: "${LW_JOBS_MUSL_COMPILE:=16}"
+: "${LW_JOBS_BUSYBOX_COMPILE:=16}"
 
 handled=0
 case "$1" in # note use of ;;& meaning that each case is re-tested (can hit multiple times)!
     "fetch-llvm"|"all-llvm"|"fetch"|"all")
         mkdir -p "$LW_SRC/llvm"
-        git clone -b llvmorg-18.1.2 $LW_GITFLAGS https://github.com/llvm/llvm-project.git "$LW_SRC/llvm"
-        git -C "$LW_SRC/llvm" am < "$LW_ROOT/patches/llvm/0001-Hack-patch-to-allow-GNU-ld-style-linker-scripts-in-w.patch"
+        git clone -b wasm-18.1.2 --shallow-exclude=llvmorg-18.1.2 --single-branch --no-tags https://github.com/joelseverin/llvm.git "$LW_SRC/llvm"
+        git -C "$LW_SRC/llvm" fetch --deepen=1 --no-tags
     handled=1;;&
 
     "fetch-kernel"|"all-kernel"|"fetch"|"all")
         mkdir -p "$LW_SRC/kernel"
-        git clone -b v6.4.16 $LW_GITFLAGS https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git "$LW_SRC/kernel"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0001-Always-access-the-instruction-pointer-intrinsic-via-.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0002-Allow-architecture-specific-panic-handling.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0003-Add-missing-processor.h-include-for-asm-generic-barr.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0004-Align-dot-instead-of-section-in-vmlinux.lds.h.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0005-Add-Wasm-architecture.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0006-Add-Wasm-binfmt.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0007-Use-.section-format-compatible-with-LLVM-as-when-tar.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0008-Provide-Wasm-support-in-mk_elfconfig.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0009-Add-dummy-ELF-constants-for-Wasm.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0010-Add-Wasm-console-support.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0011-Add-wasm_defconfig.patch"
-        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0012-HACK-Workaround-broken-wq_worker_comm.patch"
+        git clone -b wasm-6.19.3 --shallow-exclude=v6.19.3 --single-branch --no-tags https://github.com/joelseverin/linux.git "$LW_SRC/kernel"
+        git -C "$LW_SRC/kernel" fetch --deepen=1 --no-tags
     handled=1;;&
 
     "fetch-musl"|"all-musl"|"fetch"|"all")
         mkdir -p "$LW_SRC/musl"
-        git clone -b v1.2.5 $LW_GITFLAGS https://git.musl-libc.org/git/musl "$LW_SRC/musl"
+        git clone -b v1.2.5 --depth 1 --single-branch --no-tags https://git.musl-libc.org/git/musl "$LW_SRC/musl"
         git -C "$LW_SRC/musl" am < "$LW_ROOT/patches/musl/0001-NOMERGE-Hacks-to-get-Linux-Wasm-to-compile-minimal-a.patch"
     handled=1;;&
 
@@ -79,7 +65,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
 
     "fetch-busybox"|"all-busybox"|"fetch"|"all")
         mkdir -p "$LW_SRC/busybox"
-        git clone -b 1_36_1 $LW_GITFLAGS https://git.busybox.net/busybox "$LW_SRC/busybox"
+        git clone -b 1_36_1 --depth 1 --single-branch --no-tags https://git.busybox.net/busybox "$LW_SRC/busybox"
         git -C "$LW_SRC/busybox" am < "$LW_ROOT/patches/busybox/0001-NOMERGE-Hacks-to-build-Wasm-Linux-arch-minimal-and-i.patch"
     handled=1;;&
 
@@ -122,8 +108,9 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         # Note: LLVM=/blah/ MUST start AND END with a trailing slash, or it will be interpreted as LLVM=1 (which looks for system clang etc.)!
         # Unfortunately this means the value cannot be escaped in 'single quotes', which means the path cannot contain spaces...
         # Note: kernel docs often show setting CC=clang but don't do this (or you will get system clang due to the above).
+        # Another similar problem is that O= does not work with 'single quote' escaping either in recent kernel versions.
         LW_KERNEL_MAKE="make"
-        LW_KERNEL_MAKE+=" O='$LW_BUILD/kernel'"
+        LW_KERNEL_MAKE+=" O=$LW_BUILD/kernel"
         LW_KERNEL_MAKE+=" ARCH=wasm"
         LW_KERNEL_MAKE+=" LLVM=$LW_INSTALL/llvm/bin/"
         LW_KERNEL_MAKE+=" CROSS_COMPILE=wasm32-unknown-unknown-"
@@ -237,7 +224,6 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         echo "LW_SRC=$LW_SRC"
         echo "LW_BUILD=$LW_BUILD"
         echo "LW_INSTALL=$LW_INSTALL"
-        echo "LW_GITFLAGS=$LW_GITFLAGS"
         echo "---------------"
         exit 1
     handled=1;;&
