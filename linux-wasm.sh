@@ -169,7 +169,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         cp -R "$LW_INSTALL/kernel/include/." "$LW_INSTALL/busybox-kernel-headers"
         (
             cd "$LW_INSTALL/busybox-kernel-headers"
-            patch -p1 < "$LW_ROOT/patches/busybox-kernel-headers/busybox-kernel-headers-for-musl.patch"
+            patch -p1 --no-backup < "$LW_ROOT/patches/busybox-kernel-headers/busybox-kernel-headers-for-musl.patch"
         )
     handled=1;;&
 
