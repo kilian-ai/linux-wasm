@@ -112,7 +112,8 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         LW_KERNEL_MAKE="make"
         LW_KERNEL_MAKE+=" O=$LW_BUILD/kernel"
         LW_KERNEL_MAKE+=" ARCH=wasm"
-        LW_KERNEL_MAKE+=" LLVM=$LW_INSTALL/llvm/bin/"
+        LW_KERNEL_MAKE+=" LLVM=$LW_ROOT/tools/fake-llvm/"
+        LW_KERNEL_MAKE+=" REAL_LLVM=$LW_INSTALL/llvm/bin/"
         LW_KERNEL_MAKE+=" CROSS_COMPILE=wasm32-unknown-unknown-"
         LW_KERNEL_MAKE+=" HOSTCC=gcc"
         (
