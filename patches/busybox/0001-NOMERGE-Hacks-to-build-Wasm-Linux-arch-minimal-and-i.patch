@@ -1,4 +1,4 @@
-From a9b9d0159ff10b3e13c0ae70de54e0ab8e424069 Mon Sep 17 00:00:00 2001
+From 35fd595e73f8f491219be09cb79713bcbba7850e Mon Sep 17 00:00:00 2001
 From: Joel Severin <joel.severin@icemanor.se>
 Date: Mon, 13 May 2024 23:44:37 +0200
 Subject: [PATCH] NOMERGE: Hacks to build Wasm/Linux arch (minimal and
@@ -237,14 +237,14 @@ index 44715ef..d311750 100644
  	close(fd_pipe.wr); /* don't want to write to the child */
 diff --git a/configs/wasm_defconfig b/configs/wasm_defconfig
 new file mode 100644
-index 0000000..ef1dd5a
+index 0000000..3f26421
 --- /dev/null
 +++ b/configs/wasm_defconfig
 @@ -0,0 +1,1231 @@
 +#
 +# Automatically generated make config: don't edit
 +# Busybox version: 1.36.1
-+# Sat Feb 24 17:21:38 2024
++# Sat Feb 21 00:00:59 2026
 +#
 +CONFIG_HAVE_DOT_CONFIG=y
 +
@@ -1211,8 +1211,8 @@ index 0000000..ef1dd5a
 +CONFIG_ROUTE=y
 +CONFIG_SLATTACH=y
 +CONFIG_SSL_CLIENT=y
-+CONFIG_TC=y
-+CONFIG_FEATURE_TC_INGRESS=y
++# CONFIG_TC is not set
++# CONFIG_FEATURE_TC_INGRESS is not set
 +CONFIG_TCPSVD=y
 +CONFIG_UDPSVD=y
 +CONFIG_TELNET=y
@@ -1822,5 +1822,5 @@ index 20e7d56..b4af9a0 100644
  		if (is_ide_cdrom_or_tape(device))
  			return;
 -- 
-2.25.1
+2.43.0
 
