@@ -1,0 +1,207 @@
+From 9836c4c699d0df2b52809dc67589942e4998c38f Mon Sep 17 00:00:00 2001
+From: Joel Severin <joel.severin@icemanor.se>
+Date: Sun, 1 Mar 2026 22:20:56 +0100
+Subject: [PATCH] HACK: runtime: Allow BigInt/Memory64 kernels
+
+---
+ runtime/index.html      |  4 +--
+ runtime/linux-worker.js | 67 +++++++++++++++++++++++++++++------------
+ runtime/linux.js        |  7 +++--
+ 3 files changed, 54 insertions(+), 24 deletions(-)
+
+diff --git a/runtime/index.html b/runtime/index.html
+index 357a9cb..fe1213e 100644
+--- a/runtime/index.html
++++ b/runtime/index.html
+@@ -29,13 +29,13 @@
+       try {
+         const worker_url = "linux-worker.js?v=" + wasm_linux_version;
+ 
+-        const vmlinux = await WebAssembly.compileStreaming(fetch("vmlinux.wasm?v=" + wasm_linux_version));
++        const vmlinux = await WebAssembly.compileStreaming(fetch("vmlinux_wasm64_nommu.wasm?v=" + wasm_linux_version));
+ 
+         // Boot on 3 CPUs, we will bring up more later on as needed.
+         const boot_cmdline =
+           "maxcpus=3 nohz_full=0,2-63 root=/dev/ram0 rootfstype=ramfs init=/init console=hvc console=ttyS0";
+ 
+-        const initrd_request = await fetch("initramfs.cpio.gz?v=" + wasm_linux_version);
++        const initrd_request = await fetch("initramfs_wasm64_nommu.cpio.gz?v=" + wasm_linux_version);
+         if (!initrd_request.ok) {
+           throw new Error("Failed to fetch initrd from server, status: " + initrd_request.status);
+         }
+diff --git a/runtime/linux-worker.js b/runtime/linux-worker.js
+index fe3de89..23edd19 100644
+--- a/runtime/linux-worker.js
++++ b/runtime/linux-worker.js
+@@ -52,7 +52,7 @@
+     const memory_u8 = new Uint8Array(memory.buffer);
+     let end;
+     for (end = index; memory_u8[end]; ++end); // Find terminating nul-character.
+-    return text_decoder.decode(memory_u8.slice(index, end));
++    return text_decoder.decode(memory_u8.slice(Number(index), Number(end)));
+   };
+ 
+   const lock_notify = (lock, count) => {
+@@ -144,15 +144,15 @@
+         throw new Error();
+       } catch (error) {
+         const memory_u8 = new Uint8Array(memory.buffer);
+-        const encoded = text_encoder.encode(error.stack).slice(0, max_size - 1);
+-        memory_u8.set(encoded, stack_trace);
+-        memory_u8[stack_trace + encoded.length] = 0;
++        const encoded = text_encoder.encode(error.stack).slice(0, Number(max_size) - 1);
++        memory_u8.set(encoded, Number(stack_trace));
++        memory_u8[Number(stack_trace) + encoded.length] = 0;
+       }
+     },
+ 
+     /// Replace the currently executing image (kthread spawning init, or user process) with a new user process image.
+     wasm_load_executable: (bin_start, bin_end, data_start, table_start) => {
+-      user_executable = WebAssembly.compile(new Uint8Array(memory.buffer).slice(bin_start, bin_end));
++      user_executable = WebAssembly.compile(new Uint8Array(memory.buffer).slice(Number(bin_start), Number(bin_end)));
+       user_executable_params = {
+         data_start: data_start,
+         table_start: table_start,
+@@ -220,6 +220,9 @@
+     // Host callbacks used by the Wasm-default console driver.
+ 
+     wasm_driver_hvc_put: (buffer, count) => {
++      buffer = Number(buffer);
++      count = Number(count);
++
+       const memory_u8 = new Uint8Array(memory.buffer);
+ 
+       port.postMessage({
+@@ -227,10 +230,13 @@
+         message: text_decoder.decode(memory_u8.slice(buffer, buffer + count)),
+       });
+ 
+-      return count;
++      return BigInt(count);
+     },
+ 
+     wasm_driver_hvc_get: (buffer, count) => {
++      buffer = Number(buffer);
++      count = Number(count);
++
+       // Reset lock. Using .store() for the memory barrier.
+       Atomics.store(console_read_messenger, 0, -1);
+ 
+@@ -245,7 +251,7 @@
+       // Wait for a response from the main thread about how many bytes were actually written, could be 0.
+       Atomics.wait(console_read_messenger, 0, -1);
+       let console_read_count = Atomics.load(console_read_messenger, 0);
+-      return console_read_count;
++      return BigInt(console_read_count);
+     },
+   };
+ 
+@@ -277,11 +283,24 @@
+       // ni_syscall soup with unimplemented syscalls, which fails on Wasm due to a variable amount of arguments). Since
+       // these syscalls should not really be called anyway, we can have a slow js stub deal with them, and it can handle
+       // variable arguments gracefully!
+-      const ni_syscall = () => { return -38 /* aka. -ENOSYS */; };
++      let syscall_numbers = {};
++      for (const exported of WebAssembly.Module.exports(message.vmlinux)) {
++        const name = exported.name;
++        const prefix = "__syscall_nr_";
++        if (name.startsWith(prefix) && exported.kind == "global") {
++          const syscall_name = name.substring(prefix.length, name.lastIndexOf("_"));
++          syscall_numbers[syscall_name] = parseInt(name.substring(prefix.length + syscall_name.length + 1));
++        }
++      }
++      const sys_ni_syscall_template = syscall_numbers["sys_ni_syscall"];
++
++      let ni_syscalls = [];
+       for (const imported of WebAssembly.Module.imports(message.vmlinux)) {
+-        if (imported.name.startsWith("sys_") && imported.module == "env"
++        const name = imported.name;
++        if (name.startsWith("sys_") && imported.module == "env"
+           && imported.kind == "function") {
+-          import_object.env[imported.name] = ni_syscall;
++          import_object.env[name] = () => { throw new Error("Unimplemented syscall " + name + " called directly"); };
++          ni_syscalls.push(syscall_numbers[name]);
+         }
+       }
+ 
+@@ -319,21 +338,30 @@
+             init_task: vmlinux_instance.exports.init_task.value,
+           });
+ 
++          // Patch up syscall table so that conditional syscalls actually map to ni_syscall.
++          // Resolve the function pointer to (=table location of) unimplemented conditional syscalls.
++          const local_view = new DataView(memory.buffer);
++          const sys_call_table = Number(vmlinux_instance.exports.sys_call_table.value);
++          const sys_ni_syscall = local_view.getBigUint64(sys_call_table + 8 * sys_ni_syscall_template, true);
++          for (const ni_syscall of ni_syscalls) {
++            local_view.setBigUint64(sys_call_table + 8 * ni_syscall, BigInt(sys_ni_syscall), true);
++          }
++
+           // Setup the boot command line. We have the luxury to be able to write to it directly. The maximum length is
+           // not set here but is set by COMMAND_LINE_SIZE (defaults to 512 bytes).
+           const cmdline = message.boot_cmdline + "\0";
+-          const cmdline_buffer = vmlinux_instance.exports.boot_command_line.value;
++          const cmdline_buffer = Number(vmlinux_instance.exports.boot_command_line.value);
+           new Uint8Array(memory.buffer).set(text_encoder.encode(cmdline), cmdline_buffer);
+ 
+           // Grow the memory to fit initrd and copy it.
+           //
+           // All typed arrays and views on memory.buffer become invalid by growing and need to be re-created. grow()
+           // will return the old size, which becomes our base address for initrd.
+-          const initrd_start = memory.grow(((message.initrd.byteLength + 0xFFFF) / 0x10000) | 0) * 0x10000;
+-          const initrd_end = initrd_start + message.initrd.byteLength;
+-          new Uint8Array(memory.buffer).set(new Uint8Array(message.initrd), initrd_start);
+-          new DataView(memory.buffer).setUint32(vmlinux_instance.exports.initrd_start.value, initrd_start, true);
+-          new DataView(memory.buffer).setUint32(vmlinux_instance.exports.initrd_end.value, initrd_end, true);
++          const initrd_start = memory.grow(BigInt(((message.initrd.byteLength + 0xFFFF) / 0x10000) | 0)) * 0x10000n;
++          const initrd_end = initrd_start + BigInt(message.initrd.byteLength);
++          new Uint8Array(memory.buffer).set(new Uint8Array(message.initrd), Number(initrd_start));
++          new DataView(memory.buffer).setBigUint64(Number(vmlinux_instance.exports.initrd_start.value), initrd_start, true);
++          new DataView(memory.buffer).setBigUint64(Number(vmlinux_instance.exports.initrd_end.value), initrd_end, true);
+ 
+           // This will boot the maching on the primary CPU. Later on, it will boot secondaries...
+           //
+@@ -373,10 +401,11 @@
+         user_executable_imports = {
+           env: {
+             memory: memory,
+-            __memory_base: new WebAssembly.Global({ value: 'i32', mutable: false }, user_executable_params.data_start),
+-            __stack_pointer: new WebAssembly.Global({ value: 'i32', mutable: true }, stack_pointer),
++            __memory_base: new WebAssembly.Global({ value: 'i64', mutable: false }, user_executable_params.data_start),
++            __stack_pointer: new WebAssembly.Global({ value: 'i64', mutable: true }, stack_pointer),
+             __indirect_function_table: new WebAssembly.Table({ initial: 4096, element: "anyfunc" }), // TODO: fix this!
+-            __table_base: new WebAssembly.Global({ value: 'i32', mutable: false }, user_executable_params.table_start),
++            __table_base: new WebAssembly.Global({ value: 'i64', mutable: false }, user_executable_params.table_start),
++            __table_base32: new WebAssembly.Global({ value: 'i32', mutable: false }, Number(user_executable_params.table_start)),
+ 
+             // To be correct, we should save AND restore these globals between the user instance and vmlinux instance:
+             // __stack_pointer <-> __user_stack_pointer
+diff --git a/runtime/linux.js b/runtime/linux.js
+index 0e78e3a..bee060e 100644
+--- a/runtime/linux.js
++++ b/runtime/linux.js
+@@ -111,9 +111,10 @@ const linux = async (worker_url, vmlinux, boot_cmdline, initrd, log, console_wri
+ 
+   /// Memory shared between all CPUs.
+   const memory = new WebAssembly.Memory({
+-    initial: 30, // TODO: extract this automatically from vmlinux.
+-    maximum: 0x10000, // Allow the full 32-bit address space to be allocated.
++    initial: BigInt(30), // TODO: extract this automatically from vmlinux.
++    maximum: BigInt(0x10000), // Allow the full 32-bit address space to be allocated.
+     shared: true,
++    address: 'i64',
+   });
+ 
+   /**
+@@ -174,7 +175,7 @@ const linux = async (worker_url, vmlinux, boot_cmdline, initrd, log, console_wri
+ 
+     // Store for last task when wasm_serialize() returns in switch_to(). Needed for each task, both normal ones and each
+     // CPUs idle tasks (first called init_task (PID 0), not to be confused with init (PID 1) which is a normal task).
+-    const last_task = new Uint32Array(new SharedArrayBuffer(4));
++    const last_task = new BigUint64Array(new SharedArrayBuffer(8));
+ 
+     worker.onerror = (error) => {
+       throw error;
+-- 
+2.43.0
+
