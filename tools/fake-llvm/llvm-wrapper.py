@@ -3,23 +3,26 @@ import sys
 import os
 from pathlib import Path
 
+MAX_MEMORY_WASM32 = 1 << 32
+# 1 << 64 does not work but 1 << 34 should do as 16 GB is an usual runtime limit anyway.
+MAX_MEMORY_WASM64 = 1 << 34
+
 
 def rewrite_triple(original_args):
-    # A default -march is needed as some kbuild parts only sets the triple.
-    # initramfs_data in an example and this (hopefully) works as it's data only.
-    march = "wasm32"
+    # A default -march is needed as some parts of kbuild only set the triple.
+    arch = "wasm32"
     for arg in original_args:
         if arg.startswith("-march="):
             # The last one wins if multiple.
-            march = arg[len("-march=") :]
+            arch = arg[len("-march=") :]
 
-    if march not in ("wasm32", "wasm64"):
-        raise RuntimeError(f"unknown -march= specified: {march}")
+    if arch not in ("wasm32", "wasm64"):
+        raise RuntimeError(f"unknown -march= specified: {arch}")
 
     args = []
     for arg in original_args:
         if arg.startswith("--target="):
-            args.append(f"--target={march}-unknown-unknown")
+            args.append(f"--target={arch}-unknown-unknown")
 
         elif arg.startswith("-march="):
             pass  # Drop any -march=*.
@@ -27,11 +30,24 @@ def rewrite_triple(original_args):
         else:
             args.append(arg)
 
-    return args
+    return args, arch
+
+
+def get_linker_flags(max_memory, shared):
+    return [
+        "-no-gc-sections",  # No idea why this was written with only one -dash.
+        "--no-merge-data-segments",
+        "--no-entry",
+        "--export-all",
+        "--import-memory",
+        "--shared-memory",
+        f"--max-memory={max_memory}",
+        "--import-undefined",
+    ] + (["--import-table"] if shared else [])
 
 
 def rewrite_clang(original_args):
-    args = rewrite_triple(original_args)
+    args, arch = rewrite_triple(original_args)
 
     # These flags are needed so that wasm-ld can be run with --shared-memory.
     for feature in ("atomics", "bulk-memory"):
@@ -39,8 +55,28 @@ def rewrite_clang(original_args):
 
     args.append("-D__builtin_return_address=")
 
-    # Prevent s128/u128 in the kernel, which depends on compiler-rt builtins.
-    args.append("-U__SIZEOF_INT128__")
+    # Filter out -mwasm32 and -mwasm64 that some applications may concat on from
+    # LDFLGAGS. If we get them we link with the clang driver by -Wl,-mwasm32/64.
+    args = ["-Wl," + arg if arg.startswith("-mwasm") else arg for arg in args]
+
+    def is_linking(flags):
+        for flag in flags:
+            if flag.startswith("-l"):
+                return True
+        return False
+
+    if is_linking(args):
+        # -shared is the correct clang driver option, except llvm thinks we got a reactor (crt1-reactor.o).
+        # We can solve that by convering it to -Wl,-shared so that it's passed right into the linker.
+        args = ["-Wl,-shared" if arg == "-shared" else arg for arg in args]
+
+        max_memory = MAX_MEMORY_WASM32 if arch == "wasm32" else MAX_MEMORY_WASM64
+        args.extend(
+            [
+                "-Wl," + flag
+                for flag in get_linker_flags(max_memory, "-Wl,-shared" in args)
+            ]
+        )
 
     return args
 
@@ -48,6 +84,8 @@ def rewrite_clang(original_args):
 def rewrite_lld(original_args):
     args = []
     group = None
+    is_m = False
+    max_memory = MAX_MEMORY_WASM32
     for arg in original_args:
         if arg in ("-v", "--version"):
             # Abort our looping, and just run the original version check.
@@ -82,22 +120,17 @@ def rewrite_lld(original_args):
         else:
             args.append(arg)
 
+        if arg == "-m":
+            is_m = True
+        elif arg == ("" if is_m else "-m") + "wasm64":
+            is_m = False
+            max_memory = MAX_MEMORY_WASM64
+
     args.append("--error-limit=0")
 
     # Only add these for the final link, i.e. not at relocatable pre-link stages.
     if not "-r" in args:
-        args.extend(
-            [
-                "-no-gc-sections",  # No idea why this was written with only one -dash.
-                "--no-merge-data-segments",
-                "--no-entry",
-                "--export-all",
-                "--import-memory",
-                "--shared-memory",
-                f"--max-memory={1<<32}",  # TODO: What to use for 64-bit?
-                "--import-undefined",
-            ]
-        )
+        args.extend(get_linker_flags(max_memory, "-shared" in args))
 
     return args
 

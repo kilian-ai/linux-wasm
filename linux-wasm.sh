@@ -39,6 +39,12 @@ LW_INSTALL="$(realpath -sm "$LW_INSTALL")"
 : "${LW_JOBS_MUSL_COMPILE:=16}"
 : "${LW_JOBS_BUSYBOX_COMPILE:=16}"
 
+# Build variant. One of {wasm32,wasm64}_{nommu,mmu}. Beware that 64-bit and/or MMU comes with a runtime cost.
+: "${LW_VARIANT:=wasm32_nommu}"
+
+# Internal variables derived from the user-settable ones.
+LW_ARCH="${LW_VARIANT%%_*}"
+
 handled=0
 case "$1" in # note use of ;;& meaning that each case is re-tested (can hit multiple times)!
     "fetch-llvm"|"all-llvm"|"fetch"|"all")
@@ -101,16 +107,40 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
 
         cmake --build "$LW_BUILD/llvm"
         cmake --install "$LW_BUILD/llvm"
+
+        # Due to a bug in LLVM only the compiler-rt belonging to the
+        # LLVM_DEFAULT_TARGET_TRIPLE in use will be built. Build for wasm64 too.
+        # This is only needed when building the user space parts for wasm64 and
+        # can be skipped in case you want to only build wasm32 busybox/programs.
+        rm -rf "$LW_BUILD/compiler-rt-wasm64" && mkdir -p "$LW_BUILD/compiler-rt-wasm64"
+        cmake -G Ninja \
+            "-DCMAKE_INSTALL_PREFIX=$LW_INSTALL/llvm" \
+            "-B$LW_BUILD/compiler-rt-wasm64" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER="$LW_INSTALL/llvm/bin/clang" \
+            -DCMAKE_AR="$LW_INSTALL/llvm/bin/llvm-ar" \
+            -DCMAKE_NM="$LW_INSTALL/llvm/bin/llvm-nm" \
+            -DCMAKE_RANLIB="$LW_INSTALL/llvm/bin/llvm-ranlib" \
+            -DLLVM_CONFIG_PATH="$LW_INSTALL/llvm/bin/llvm-config" \
+            -DCOMPILER_RT_BAREMETAL_BUILD=Yes \
+            -DCOMPILER_RT_BUILD_CRT=No \
+            -DCOMPILER_RT_HAS_FPIC_FLAG=No \
+            -DCOMPILER_RT_DEFAULT_TARGET_ONLY=Yes \
+            -DCMAKE_C_COMPILER_TARGET="wasm64-unknown-unknown" \
+            "-DCOMPILER_RT_INSTALL_LIBRARY_DIR=$LW_INSTALL/llvm/lib/clang/18/lib" \
+            "$LW_SRC/llvm/compiler-rt/lib/builtins"
+        cmake --build "$LW_BUILD/compiler-rt-wasm64"
+        cmake --install "$LW_BUILD/compiler-rt-wasm64"
     handled=1;;&
 
     "build-kernel"|"all-kernel"|"build"|"all"|"build-os")
-        mkdir -p "$LW_BUILD/kernel"
+        mkdir -p "$LW_BUILD/kernel-$LW_VARIANT"
         # Note: LLVM=/blah/ MUST start AND END with a trailing slash, or it will be interpreted as LLVM=1 (which looks for system clang etc.)!
         # Unfortunately this means the value cannot be escaped in 'single quotes', which means the path cannot contain spaces...
         # Note: kernel docs often show setting CC=clang but don't do this (or you will get system clang due to the above).
         # Another similar problem is that O= does not work with 'single quote' escaping either in recent kernel versions.
         LW_KERNEL_MAKE="make"
-        LW_KERNEL_MAKE+=" O=$LW_BUILD/kernel"
+        LW_KERNEL_MAKE+=" O=$LW_BUILD/kernel-$LW_VARIANT"
         LW_KERNEL_MAKE+=" ARCH=wasm"
         LW_KERNEL_MAKE+=" LLVM=$LW_ROOT/tools/fake-llvm/"
         LW_KERNEL_MAKE+=" REAL_LLVM=$LW_INSTALL/llvm/bin/"
@@ -121,84 +151,90 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             #$LW_KERNEL_MAKE menuconfig
             #exit 1
 
-            $LW_KERNEL_MAKE defconfig
+            $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
             $LW_KERNEL_MAKE -j $LW_JOBS_KERNEL_COMPILE V=1
             $LW_KERNEL_MAKE headers_install
         )
-        mkdir -p "$LW_INSTALL/kernel/include"
-        cp -R "$LW_BUILD/kernel/usr/include/." "$LW_INSTALL/kernel/include"
-        cp "$LW_BUILD/kernel/vmlinux" "$LW_INSTALL/kernel/vmlinux.wasm"
+        mkdir -p "$LW_INSTALL/kernel-$LW_VARIANT/include"
+        cp -R "$LW_BUILD/kernel-$LW_VARIANT/usr/include/." "$LW_INSTALL/kernel-$LW_VARIANT/include"
+        cp "$LW_BUILD/kernel-$LW_VARIANT/vmlinux" "$LW_INSTALL/kernel-$LW_VARIANT/vmlinux.wasm"
     handled=1;;&
 
     "build-musl"|"all-musl"|"build"|"all"|"build-os")
-        mkdir -p "$LW_BUILD/musl"
+        mkdir -p "$LW_BUILD/musl-$LW_VARIANT"
         (
-            cd "$LW_BUILD/musl"
+            cd "$LW_BUILD/musl-$LW_VARIANT"
+
+            # Needed not only by configure, but also make, and make install!
+            export REAL_LLVM="$LW_INSTALL/llvm/bin"
 
             # LIBCC is set mostly to something non-empty, which is needed for the build to succeed.
             # Note how we build --disable-shared (i.e. disable dynamic linking by musl) but with -fPIC and -shared.
-            CROSS_COMPILE="$LW_INSTALL/llvm/bin/llvm-" \
-    	    CC="$LW_INSTALL/llvm/bin/clang" \
-    	    CFLAGS="--target=wasm32-unknown-unknown -Xclang -target-feature -Xclang +atomics -Xclang -target-feature -Xclang +bulk-memory -fPIC -Wl,-shared" \
-	        LIBCC="--rtlib=compiler-rt" \
-	        "$LW_SRC/musl/configure" --target=wasm --prefix=/ --disable-shared "--srcdir=$LW_SRC/musl"
-            make -j $LW_JOBS_MUSL_COMPILE 
+            CROSS_COMPILE="$LW_ROOT/tools/fake-llvm/llvm-" \
+            CC="$LW_ROOT/tools/fake-llvm/clang" \
+            CFLAGS="--target=wasm-linux-musl -march=$LW_ARCH -fPIC -Wl,-shared" \
+            LIBCC="--rtlib=compiler-rt" \
+            "$LW_SRC/musl/configure" --target=wasm --prefix=/ --disable-shared "--srcdir=$LW_SRC/musl"
+            make -j $LW_JOBS_MUSL_COMPILE
 
             # NOTE: do not forget destdir or you may ruin the host system!!!
             # We set --prefix to / as include/lib dirs are auto picked up by LLVM then (using --sysroot).
-            mkdir -p "$LW_INSTALL/musl"
-            DESTDIR="$LW_INSTALL/musl" make install
+            mkdir -p "$LW_INSTALL/musl-$LW_VARIANT"
+            DESTDIR="$LW_INSTALL/musl-$LW_VARIANT" make install
         )
     handled=1;;&
 
     "build-busybox-kernel-headers"|"all-busybox-kernel-headers"|"build"|"all"|"build-os")
-        rm -rf "$LW_INSTALL/busybox-kernel-headers"
-        mkdir -p "$LW_INSTALL/busybox-kernel-headers"
-        cp -R "$LW_INSTALL/kernel/include/." "$LW_INSTALL/busybox-kernel-headers"
+        rm -rf "$LW_INSTALL/busybox-kernel-headers-$LW_VARIANT"
+        mkdir -p "$LW_INSTALL/busybox-kernel-headers-$LW_VARIANT"
+        cp -R "$LW_INSTALL/kernel-$LW_VARIANT/include/." "$LW_INSTALL/busybox-kernel-headers-$LW_VARIANT"
         (
-            cd "$LW_INSTALL/busybox-kernel-headers"
+            cd "$LW_INSTALL/busybox-kernel-headers-$LW_VARIANT"
             patch -p1 --no-backup < "$LW_ROOT/patches/busybox-kernel-headers/busybox-kernel-headers-for-musl.patch"
         )
     handled=1;;&
 
     "build-busybox"|"all-busybox"|"build"|"all"|"build-os")
-        mkdir -p "$LW_BUILD/busybox"
-        mkdir -p "$LW_INSTALL/busybox"
-        cd "$LW_SRC/busybox"
-        for CMD in "wasm_defconfig" "-j $LW_JOBS_BUSYBOX_COMPILE" "install"
-        do # make wasm_defconfig, make, make install (CONFIG_PREFIX is set below for install path).
-            # The path escaping is a bit tricky but this seems to work... somehow...
-            make "O=$LW_BUILD/busybox" ARCH=wasm "CONFIG_PREFIX=$LW_INSTALL/busybox" \
-                "CROSS_COMPILE=$LW_INSTALL/llvm/bin/" "CONFIG_SYSROOT=$LW_INSTALL/musl" \
-                CONFIG_EXTRA_CFLAGS="$CFLAGS -isystem '$LW_INSTALL/busybox-kernel-headers' -D__linux__ -fPIC" \
-                $CMD
-        done
+        mkdir -p "$LW_BUILD/busybox-$LW_VARIANT"
+        mkdir -p "$LW_INSTALL/busybox-$LW_VARIANT"
+        (
+            cd "$LW_SRC/busybox"
+            for CMD in "wasm_defconfig" "-j $LW_JOBS_BUSYBOX_COMPILE" "install"
+            do # make wasm_defconfig, make, make install (CONFIG_PREFIX is set below for install path).
+                # The path escaping is a bit tricky but this seems to work... somehow...
+                REAL_LLVM="$LW_INSTALL/llvm/bin" make "O=$LW_BUILD/busybox-$LW_VARIANT" ARCH=wasm "CONFIG_PREFIX=$LW_INSTALL/busybox-$LW_VARIANT" \
+                    "CROSS_COMPILE=$LW_ROOT/tools/fake-llvm/" "CONFIG_SYSROOT=$LW_INSTALL/musl-$LW_VARIANT" \
+                    CONFIG_EXTRA_CFLAGS="$CFLAGS --target=wasm-linux-musl -march=$LW_ARCH -isystem '$LW_INSTALL/busybox-kernel-headers-$LW_VARIANT' -D__linux__ -fPIC" \
+                    CONFIG_EXTRA_LDFLAGS="-m$LW_ARCH -shared" \
+                    $CMD
+            done
+        )
     handled=1;;&
 
     "build-initramfs"|"all-initramfs"|"build"|"all"|"build-os")
-        mkdir -p "$LW_INSTALL/initramfs"
+        mkdir -p "$LW_INSTALL/initramfs-$LW_VARIANT"
 
         # First, create the base by copying a template with some device files.
         # This base is created by tools/make-initramfs-base.sh but requires root to run.
-        cp "$LW_ROOT/patches/initramfs/initramfs-base.cpio" "$LW_INSTALL/initramfs/initramfs.cpio"
+        cp "$LW_ROOT/patches/initramfs/initramfs-base.cpio" "$LW_INSTALL/initramfs-$LW_VARIANT/initramfs.cpio"
 
         # Then copy BusyBox into it.
         (
-            cd "$LW_INSTALL/busybox"
+            cd "$LW_INSTALL/busybox-$LW_VARIANT"
             # The below command must run in the directory of the archive (i.e. read "find .").
-            find . -print0 | cpio --null -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+            find . -print0 | cpio --null -ov --format=newc -A -O "$LW_INSTALL/initramfs-$LW_VARIANT/initramfs.cpio"
         )
 
         # And copy a simple init too.
         (
             cd "$LW_ROOT/patches/initramfs/"
             # The below command must run in the same directory as the root of the files it will copy.
-            echo "./init" | cpio -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+            echo "./init" | cpio -ov --format=newc -A -O "$LW_INSTALL/initramfs-$LW_VARIANT/initramfs.cpio"
         )
 
         # Finally we should zip it up so that it takes less space. This is the file to distribute.
-        rm -f "$LW_INSTALL/initramfs/initramfs.cpio.gz"
-        gzip "$LW_INSTALL/initramfs/initramfs.cpio"
+        rm -f "$LW_INSTALL/initramfs-$LW_VARIANT/initramfs.cpio.gz"
+        gzip "$LW_INSTALL/initramfs-$LW_VARIANT/initramfs.cpio"
     handled=1;;&
 
     ""|"help")
@@ -225,6 +261,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         echo "LW_SRC=$LW_SRC"
         echo "LW_BUILD=$LW_BUILD"
         echo "LW_INSTALL=$LW_INSTALL"
+        echo "LW_VARIANT=$LW_VARIANT"
         echo "---------------"
         exit 1
     handled=1;;&

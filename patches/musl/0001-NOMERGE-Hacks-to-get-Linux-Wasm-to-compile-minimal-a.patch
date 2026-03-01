@@ -1,4 +1,4 @@
-From 725521cc7eae536cc9542e832afba665d69545ea Mon Sep 17 00:00:00 2001
+From a42b03a8162512943ce86d2cd5f05c333c04055b Mon Sep 17 00:00:00 2001
 From: Joel Severin <joel.severin@icemanor.se>
 Date: Wed, 27 Mar 2024 22:13:53 +0100
 Subject: [PATCH] NOMERGE: Hacks to get Linux/Wasm to compile (minimal and
@@ -6,22 +6,23 @@ Subject: [PATCH] NOMERGE: Hacks to get Linux/Wasm to compile (minimal and
 
 ---
  arch/wasm/arch.mak                         |   1 +
- arch/wasm/atomic_arch.h                    |  15 +
- arch/wasm/bits/alltypes.h.in               |  17 ++
+ arch/wasm/atomic_arch.h                    |  21 ++
+ arch/wasm/bits/alltypes.h.in               |  21 ++
+ arch/wasm/bits/asm.h                       |  23 ++
  arch/wasm/bits/fenv.h                      |  10 +
  arch/wasm/bits/float.h                     |  15 +
  arch/wasm/bits/ipcstat.h                   |   1 +
  arch/wasm/bits/msg.h                       |  18 ++
  arch/wasm/bits/posix.h                     |   2 +
  arch/wasm/bits/ptrace.h                    |   2 +
- arch/wasm/bits/reg.h                       |   3 +
+ arch/wasm/bits/reg.h                       |   7 +
  arch/wasm/bits/sem.h                       |  13 +
  arch/wasm/bits/setjmp.h                    |   1 +
- arch/wasm/bits/shm.h                       |  31 +++
+ arch/wasm/bits/shm.h                       |  31 ++
  arch/wasm/bits/signal.h                    |  85 ++++++
  arch/wasm/bits/stat.h                      |  25 ++
- arch/wasm/bits/stdint.h                    |  20 ++
- arch/wasm/bits/syscall.h.in                | 305 +++++++++++++++++++++
+ arch/wasm/bits/stdint.h                    |  29 ++
+ arch/wasm/bits/syscall.h.in                | 336 +++++++++++++++++++++
  arch/wasm/bits/user.h                      |   8 +
  arch/wasm/crt_arch.h                       |  40 +++
  arch/wasm/kstat.h                          |  21 ++
@@ -37,7 +38,7 @@ Subject: [PATCH] NOMERGE: Hacks to get Linux/Wasm to compile (minimal and
  src/linux/reboot.c                         |   2 +-
  src/misc/syscall.c                         |  56 +++-
  src/misc/syscalls.c                        |   0
- src/misc/wasm/syscalls.s                   | 123 +++++++++
+ src/misc/wasm/syscalls.S                   | 113 +++++++
  src/network/accept.c                       |   2 +-
  src/network/accept4.c                      |   2 +-
  src/network/bind.c                         |   2 +-
@@ -55,28 +56,29 @@ Subject: [PATCH] NOMERGE: Hacks to get Linux/Wasm to compile (minimal and
  src/process/posix_spawn.c                  |   3 +-
  src/process/vfork.c                        |  12 +-
  src/setjmp/longjmp.c                       |  19 ++
- src/setjmp/wasm/longjmp.S                  |  13 +
- src/setjmp/wasm/setjmp.S                   |   5 +
- src/signal/wasm/restore.s                  |  98 +++++++
- src/signal/wasm/sigsetjmp.S                |   5 +
+ src/setjmp/wasm/longjmp.S                  |  17 ++
+ src/setjmp/wasm/setjmp.S                   |   8 +
+ src/signal/wasm/restore.S                  | 103 +++++++
+ src/signal/wasm/sigsetjmp.S                |   8 +
  src/thread/__syscall_cp.c                  |  18 --
  src/thread/__timedwait.c                   |   6 +-
  src/thread/__wait.c                        |   4 +-
  src/thread/pthread_barrier_wait.c          |   4 +-
- src/thread/pthread_cancel.c                | 108 ++++++--
+ src/thread/pthread_cancel.c                | 108 +++++--
  src/thread/pthread_cond_timedwait.c        |   4 +-
  src/thread/pthread_mutex_timedlock.c       |   6 +-
  src/thread/pthread_mutex_trylock.c         |   2 +-
  src/thread/pthread_mutex_unlock.c          |   2 +-
  src/thread/pthread_mutexattr_setprotocol.c |   2 +-
  src/thread/wasm/__set_thread_area.c        |   9 +
- src/thread/wasm/clone.s                    | 149 ++++++++++
+ src/thread/wasm/clone.S                    | 167 ++++++++++
  src/unistd/access.c                        |   2 +-
  src/unistd/faccessat.c                     |   2 +-
- 68 files changed, 1387 insertions(+), 141 deletions(-)
+ 69 files changed, 1487 insertions(+), 141 deletions(-)
  create mode 100644 arch/wasm/arch.mak
  create mode 100644 arch/wasm/atomic_arch.h
  create mode 100644 arch/wasm/bits/alltypes.h.in
+ create mode 100644 arch/wasm/bits/asm.h
  create mode 100644 arch/wasm/bits/fenv.h
  create mode 100644 arch/wasm/bits/float.h
  create mode 100644 arch/wasm/bits/ipcstat.h
@@ -98,13 +100,13 @@ Subject: [PATCH] NOMERGE: Hacks to get Linux/Wasm to compile (minimal and
  create mode 100644 arch/wasm/reloc.h
  create mode 100644 arch/wasm/syscall_arch.h
  create mode 100644 src/misc/syscalls.c
- create mode 100644 src/misc/wasm/syscalls.s
+ create mode 100644 src/misc/wasm/syscalls.S
  create mode 100644 src/setjmp/wasm/longjmp.S
  create mode 100644 src/setjmp/wasm/setjmp.S
- create mode 100644 src/signal/wasm/restore.s
+ create mode 100644 src/signal/wasm/restore.S
  create mode 100644 src/signal/wasm/sigsetjmp.S
  create mode 100644 src/thread/wasm/__set_thread_area.c
- create mode 100644 src/thread/wasm/clone.s
+ create mode 100644 src/thread/wasm/clone.S
 
 diff --git a/arch/wasm/arch.mak b/arch/wasm/arch.mak
 new file mode 100644
@@ -115,15 +117,21 @@ index 0000000..aa4d05c
 +COMPAT_SRC_DIRS = compat/time32
 diff --git a/arch/wasm/atomic_arch.h b/arch/wasm/atomic_arch.h
 new file mode 100644
-index 0000000..95e840e
+index 0000000..1f38df0
 --- /dev/null
 +++ b/arch/wasm/atomic_arch.h
-@@ -0,0 +1,15 @@
+@@ -0,0 +1,21 @@
 +#define a_cas a_cas
 +static inline int a_cas(volatile int *p, int t, int s)
 +{
 +	__atomic_compare_exchange_n(p, &t, s, (_Bool)0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
 +	return t;
++}
++
++#define a_cas_p a_cas_p
++static inline void *a_cas_p(volatile void *p, void *t, void *s)
++{
++	return (void *)a_cas((volatile int *)p, (long)t, (long)s);
 +}
 +
 +extern void __wasm_abort();
@@ -136,18 +144,22 @@ index 0000000..95e840e
 +}
 diff --git a/arch/wasm/bits/alltypes.h.in b/arch/wasm/bits/alltypes.h.in
 new file mode 100644
-index 0000000..4b9c346
+index 0000000..a18a9c0
 --- /dev/null
 +++ b/arch/wasm/bits/alltypes.h.in
-@@ -0,0 +1,17 @@
+@@ -0,0 +1,21 @@
 +#define _REDIR_TIME64 1
 +#define _Addr long
 +#define _Int64 long long
-+#define _Reg int
++#define _Reg long
 +
 +#define __BYTE_ORDER 1234
 +
++#if __SIZEOF_LONG__ == 4
 +#define __LONG_MAX 0x7fffffffL
++#else
++#define __LONG_MAX 0x7fffffffffffffffL
++#endif
 +
 +#ifndef __cplusplus
 +TYPEDEF int wchar_t;
@@ -157,6 +169,35 @@ index 0000000..4b9c346
 +TYPEDEF double double_t;
 +
 +TYPEDEF struct { long long __ll; long double __ld; } max_align_t;
+diff --git a/arch/wasm/bits/asm.h b/arch/wasm/bits/asm.h
+new file mode 100644
+index 0000000..8b21d71
+--- /dev/null
++++ b/arch/wasm/bits/asm.h
+@@ -0,0 +1,23 @@
++#if __SIZEOF_LONG__ == 4
++#define iLONG i32
++#define INSN_32_64(insn32, insn64) insn32
++#else
++#define iLONG i64
++#define INSN_32_64(insn32, insn64) insn64
++#endif
++
++#define CALL_INDIRECT_FIXUP INSN_32_64(, i32.wrap_i64)
++
++#define SIZEOF_INT	__SIZEOF_INT__
++#define SIZEOF_LONG	__SIZEOF_LONG__
++
++.globaltype __stack_pointer, iLONG
++.globaltype __tls_base, iLONG
++
++.functype __wasm_syscall_0(iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_1(iLONG, iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_2(iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_3(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_4(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_5(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
++.functype __wasm_syscall_6(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
 diff --git a/arch/wasm/bits/fenv.h b/arch/wasm/bits/fenv.h
 new file mode 100644
 index 0000000..edbdea2
@@ -243,12 +284,16 @@ index 0000000..da93e7a
 +#define PTRACE_SINGLEBLOCK	33
 diff --git a/arch/wasm/bits/reg.h b/arch/wasm/bits/reg.h
 new file mode 100644
-index 0000000..0c7bffc
+index 0000000..8c24f2a
 --- /dev/null
 +++ b/arch/wasm/bits/reg.h
-@@ -0,0 +1,3 @@
+@@ -0,0 +1,7 @@
 +#undef __WORDSIZE
++#if __SIZEOF_LONG__ == 4
 +#define __WORDSIZE 32
++#else
++#define __WORDSIZE 64
++#endif
 +/* FIXME */
 diff --git a/arch/wasm/bits/sem.h b/arch/wasm/bits/sem.h
 new file mode 100644
@@ -437,10 +482,10 @@ index 0000000..8a4d509
 +};
 diff --git a/arch/wasm/bits/stdint.h b/arch/wasm/bits/stdint.h
 new file mode 100644
-index 0000000..d1b2712
+index 0000000..8ad6a9b
 --- /dev/null
 +++ b/arch/wasm/bits/stdint.h
-@@ -0,0 +1,20 @@
+@@ -0,0 +1,29 @@
 +typedef int32_t int_fast16_t;
 +typedef int32_t int_fast32_t;
 +typedef uint32_t uint_fast16_t;
@@ -455,18 +500,27 @@ index 0000000..d1b2712
 +#define UINT_FAST16_MAX UINT32_MAX
 +#define UINT_FAST32_MAX UINT32_MAX
 +
++#if __SIZEOF_LONG__ == 4
 +#define INTPTR_MIN      INT32_MIN
 +#define INTPTR_MAX      INT32_MAX
 +#define UINTPTR_MAX     UINT32_MAX
 +#define PTRDIFF_MIN     INT32_MIN
 +#define PTRDIFF_MAX     INT32_MAX
 +#define SIZE_MAX        UINT32_MAX
++#else
++#define INTPTR_MIN      INT64_MIN
++#define INTPTR_MAX      INT64_MAX
++#define UINTPTR_MAX     UINT64_MAX
++#define PTRDIFF_MIN     INT64_MIN
++#define PTRDIFF_MAX     INT64_MAX
++#define SIZE_MAX        UINT64_MAX
++#endif
 diff --git a/arch/wasm/bits/syscall.h.in b/arch/wasm/bits/syscall.h.in
 new file mode 100644
-index 0000000..5227a60
+index 0000000..9eb9ab7
 --- /dev/null
 +++ b/arch/wasm/bits/syscall.h.in
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,336 @@
 +#define __NR_io_setup 0
 +#define __NR_io_destroy 1
 +#define __NR_io_submit 2
@@ -701,6 +755,7 @@ index 0000000..5227a60
 +#define __NR_statx 291
 +#define __NR_rseq 293
 +#define __NR_kexec_file_load 294
++
 +#define __NR_clock_gettime64 403
 +#define __NR_clock_settime64 404
 +#define __NR_clock_adjtime64 405
@@ -721,6 +776,7 @@ index 0000000..5227a60
 +#define __NR_rt_sigtimedwait_time64 421
 +#define __NR_futex_time64 422
 +#define __NR_sched_rr_get_interval_time64 423
++
 +#define __NR_pidfd_send_signal 424
 +#define __NR_io_uring_setup 425
 +#define __NR_io_uring_enter 426
@@ -750,6 +806,30 @@ index 0000000..5227a60
 +#define __NR_cachestat		451
 +#define __NR_fchmodat2		452
 +
++/* We need it for 64-bit but it can't be present for 32-bit. */
++#if __SIZEOF_LONG__ == 8 /* The Makefile removes all lines not containing __NR_. Do not remove this comment. */
++#define __NR_clock_gettime 113
++#define __NR_clock_settime 112
++#define __NR_clock_getres 114
++#define __NR_clock_nanosleep 115
++#define __NR_clock_adjtime 266
++#define __NR_timer_gettime 108
++#define __NR_timer_settime 110
++#define __NR_timerfd_gettime 87
++#define __NR_timerfd_settime 86
++#define __NR_utimensat 88
++#define __NR_pselect6 72
++#define __NR_ppoll 73
++#define __NR_io_pgetevents 292
++#define __NR_recvmmsg 243
++#define __NR_mq_timedsend 182
++#define __NR_mq_timedreceive 183
++#define __NR_semtimedop 192
++#define __NR_rt_sigtimedwait 137
++#define __NR_futex 98
++#define __NR_sched_rr_get_interval 127
++#endif /* The Makefile removes all lines not containing __NR_. Do not remove this comment. */
++
 +/* These ones are NOT supported but required by musl - will return -ENOSYS. */
 +#define __NR_nanosleep 101
 +#define __NR_settimeofday 170
@@ -770,8 +850,13 @@ index 0000000..5227a60
 +#define __NR_migrate_pages 238
 +#define __NR_move_pages 239
 +
-+/* Required by musl to select the correct prototype. Notice the double __. */
++/*
++ * Required by musl to select the correct prototype on 32-bit. However, does not
++ * work on 64-bit. Notice the double __.
++ */
++#if __SIZEOF_LONG__ == 4 /* The Makefile removes all lines not containing "__NR_". Do not remove this comment. */
 +#define SYS__llseek __NR_lseek
++#endif /* The Makefile removes all lines not containing "__NR_". Do not remove this comment. */
 diff --git a/arch/wasm/bits/user.h b/arch/wasm/bits/user.h
 new file mode 100644
 index 0000000..7954679
@@ -1292,23 +1377,13 @@ index 6f3ef65..471a9b2 100644
 diff --git a/src/misc/syscalls.c b/src/misc/syscalls.c
 new file mode 100644
 index 0000000..e69de29
-diff --git a/src/misc/wasm/syscalls.s b/src/misc/wasm/syscalls.s
+diff --git a/src/misc/wasm/syscalls.S b/src/misc/wasm/syscalls.S
 new file mode 100644
-index 0000000..70e5069
+index 0000000..4fc4c55
 --- /dev/null
-+++ b/src/misc/wasm/syscalls.s
-@@ -0,0 +1,123 @@
-+.globaltype __stack_pointer, i32
-+.globaltype __tls_base, i32
-+.functype __wasm_syscall_0(i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_1(i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_2(i32, i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_3(i32, i32, i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_4(i32, i32, i32, i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_5(i32, i32, i32, i32, i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_6(i32, i32, i32, i32, i32, i32, i32, i32, i32) -> (i32)
-+
-+#define haxx
++++ b/src/misc/wasm/syscalls.S
+@@ -0,0 +1,113 @@
++#include <bits/asm.h>
 +
 +.macro __SYSCALL_HEAD
 +	global.get __stack_pointer
@@ -1327,7 +1402,7 @@ index 0000000..70e5069
 +.globl __syscall0
 +.hidden __syscall0
 +__syscall0:
-+	.functype __syscall0(i32) -> (i32)
++	.functype __syscall0(iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	call __wasm_syscall_0
@@ -1338,7 +1413,7 @@ index 0000000..70e5069
 +.globl __syscall1
 +.hidden __syscall1
 +__syscall1:
-+	.functype __syscall1(i32, i32) -> (i32)
++	.functype __syscall1(iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1350,7 +1425,7 @@ index 0000000..70e5069
 +.globl __syscall2
 +.hidden __syscall2
 +__syscall2:
-+	.functype __syscall2(i32, i32, i32) -> (i32)
++	.functype __syscall2(iLONG, iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1363,7 +1438,7 @@ index 0000000..70e5069
 +.globl __syscall3
 +.hidden __syscall3
 +__syscall3:
-+	.functype __syscall3(i32, i32, i32, i32) -> (i32)
++	.functype __syscall3(iLONG, iLONG, iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1377,7 +1452,7 @@ index 0000000..70e5069
 +.globl __syscall4
 +.hidden __syscall4
 +__syscall4:
-+	.functype __syscall4(i32, i32, i32, i32, i32) -> (i32)
++	.functype __syscall4(iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1392,7 +1467,7 @@ index 0000000..70e5069
 +.globl __syscall5
 +.hidden __syscall5
 +__syscall5:
-+	.functype __syscall5(i32, i32, i32, i32, i32, i32) -> (i32)
++	.functype __syscall5(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1408,7 +1483,7 @@ index 0000000..70e5069
 +.globl __syscall6
 +.hidden __syscall6
 +__syscall6:
-+	.functype __syscall6(i32, i32, i32, i32, i32, i32, i32) -> (i32)
++	.functype __syscall6(iLONG, iLONG, iLONG, iLONG, iLONG, iLONG, iLONG) -> (iLONG)
 +
 +	__SYSCALL_HEAD
 +	local.get 1
@@ -1704,43 +1779,48 @@ index e69de29..d03b171 100644
 +}
 diff --git a/src/setjmp/wasm/longjmp.S b/src/setjmp/wasm/longjmp.S
 new file mode 100644
-index 0000000..192b0b3
+index 0000000..292afbd
 --- /dev/null
 +++ b/src/setjmp/wasm/longjmp.S
-@@ -0,0 +1,13 @@
+@@ -0,0 +1,17 @@
++#include <bits/asm.h>
++
 +.functype abort() -> ()
 +
 +.globl longjmp
 +longjmp:
-+	.functype longjmp(i32, i32) -> ()
-+	# setjmp/sigsetjmp/longjmp is currently not supported (but it can be,
-+	# LLVM has support for it with some fixup logic needed). Since some
-+	# programs use setjmp but only longjmp when for example an error occurs,
-+	# we can allow setjmp/sigsetjmp (by doing nothing). When it actually
-+	# wants to longjmp we have to abort, let's just hope that never happens.
++	.functype longjmp(iLONG, i32) -> ()
++	/*
++	 * setjmp/sigsetjmp/longjmp is currently not supported (but it can be,
++	 * LLVM has support for it with some fixup logic needed). Since some
++	 * programs use setjmp but only longjmp when for example an error occurs,
++	 * we can allow setjmp/sigsetjmp (by doing nothing). When it actually
++	 * wants to longjmp we have to abort, let's just hope that never happens.
++	*/
 +	call abort
 +
 +	end_function
 diff --git a/src/setjmp/wasm/setjmp.S b/src/setjmp/wasm/setjmp.S
 new file mode 100644
-index 0000000..50b8983
+index 0000000..0a6c5b4
 --- /dev/null
 +++ b/src/setjmp/wasm/setjmp.S
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,8 @@
++#include <bits/asm.h>
++
 +.globl setjmp
 +setjmp:
-+	.functype setjmp(i32) -> ()
-+	# We allow this, but do nothing. longjmp() is forbidden though.
++	.functype setjmp(iLONG) -> (i32)
++	/* We allow this, but do nothing. longjmp() is forbidden though. */
++	i32.const 0
 +	end_function
-diff --git a/src/signal/wasm/restore.s b/src/signal/wasm/restore.s
+diff --git a/src/signal/wasm/restore.S b/src/signal/wasm/restore.S
 new file mode 100644
-index 0000000..f14b43c
+index 0000000..a3b2abf
 --- /dev/null
-+++ b/src/signal/wasm/restore.s
-@@ -0,0 +1,98 @@
-+.globaltype __stack_pointer, i32
-+.globaltype __tls_base, i32
-+.functype __wasm_syscall_0(i32, i32, i32) -> (i32)
++++ b/src/signal/wasm/restore.S
+@@ -0,0 +1,103 @@
++#include <bits/asm.h>
 +
 +.globl __restore_rt
 +.hidden __restore_rt
@@ -1749,7 +1829,7 @@ index 0000000..f14b43c
 +
 +	global.get __stack_pointer
 +	global.get __tls_base
-+	i32.const 139 # SYS_rt_sigreturn
++	iLONG.const 139 # SYS_rt_sigreturn
 +	call __wasm_syscall_0
 +	unreachable
 +
@@ -1772,7 +1852,7 @@ index 0000000..f14b43c
 +	/* 1: info_param */
 +	/* 2: uc_param */
 +	/* 3: sa_handler */
-+	.local i32, i32, i32, i32
++	.local i32, iLONG, iLONG, iLONG
 +
 +	/* sig_param */
 +	global.get __stack_pointer
@@ -1783,25 +1863,28 @@ index 0000000..f14b43c
 +	 */
 +	local.set 0
 +
++	/* (4 bytes padding for alignment on 64-bit.) */
++
 +	/* info_param */
 +	global.get __stack_pointer
-+	i32.const 4
-+	i32.add
-+	i32.load 0
++	iLONG.const 4
++	INSN_32_64(i32.const 4, i64.const 8)
++	iLONG.add
++	iLONG.load 0
 +	local.set 1
 +
 +	/* uc_param */
 +	global.get __stack_pointer
-+	i32.const 8
-+	i32.add
-+	i32.load 0
++	INSN_32_64(i32.const 8, i64.const 16)
++	iLONG.add
++	iLONG.load 0
 +	local.set 2
 +
 +	/* sa_handler */
 +	global.get __stack_pointer
-+	i32.const 12
-+	i32.add
-+	i32.load 0
++	INSN_32_64(i32.const 12, i64.const 24)
++	iLONG.add
++	iLONG.load 0
 +	local.set 3
 +
 +	/* (__stack_pointer is already 16-byte aligned by the kernel.) */
@@ -1809,18 +1892,21 @@ index 0000000..f14b43c
 +	/* !SA_SIGINFO */
 +	block
 +		local.get 1
++		INSN_32_64(, i64.eqz)
++		INSN_32_64(, i32.eqz)
 +		br_if 0
 +
 +		local.get 0 /* sig_param */
 +		local.get 3 /* sa_handler cast to handler */
 +		/* handler(sig) */
++		CALL_INDIRECT_FIXUP
 +		call_indirect (i32) -> ()
 +	end_block
 +
 +	/* SA_SIGINFO */
 +	block
 +		local.get 1
-+		i32.eqz
++		iLONG.eqz
 +		br_if 0
 +
 +		local.get 0 /* sig _param*/
@@ -1828,7 +1914,8 @@ index 0000000..f14b43c
 +		local.get 2 /* uc_param */
 +		local.get 3 /* sa_handler cast to sigaction */
 +		/* sigaction(sig_param, info_param, uc_param) */
-+		call_indirect (i32, i32, i32) -> ()
++		CALL_INDIRECT_FIXUP
++		call_indirect (i32, iLONG, iLONG) -> ()
 +	end_block
 +
 +	/* Unless the handler itself calls SYS_rt_sigreturn we have to do it. */
@@ -1838,14 +1925,17 @@ index 0000000..f14b43c
 +	end_function
 diff --git a/src/signal/wasm/sigsetjmp.S b/src/signal/wasm/sigsetjmp.S
 new file mode 100644
-index 0000000..83dd15d
+index 0000000..eed8254
 --- /dev/null
 +++ b/src/signal/wasm/sigsetjmp.S
-@@ -0,0 +1,5 @@
+@@ -0,0 +1,8 @@
++#include <bits/asm.h>
++
 +.globl sigsetjmp
 +sigsetjmp:
-+	.functype sigsetjmp(i32, i32) -> ()
-+	# We allow this, but do nothing. longjmp() is forbidden though.
++	.functype sigsetjmp(iLONG, i32) -> (i32)
++	/* We allow this, but do nothing. longjmp() is forbidden though. */
++	i32.const 0
 +	end_function
 diff --git a/src/thread/__syscall_cp.c b/src/thread/__syscall_cp.c
 index 42a0167..f33c5d0 100644
@@ -2168,110 +2258,122 @@ index 0000000..f703c34
 +	__musl_tp = (uintptr_t)p;
 +	return 0;
 +}
-diff --git a/src/thread/wasm/clone.s b/src/thread/wasm/clone.s
+diff --git a/src/thread/wasm/clone.S b/src/thread/wasm/clone.S
 new file mode 100644
-index 0000000..4aa3a7e
+index 0000000..566f15d
 --- /dev/null
-+++ b/src/thread/wasm/clone.s
-@@ -0,0 +1,149 @@
-+.globaltype __stack_pointer, i32
-+.globaltype __tls_base, i32
-+.functype __wasm_syscall_1(i32, i32, i32, i32) -> (i32)
-+.functype __wasm_syscall_5(i32, i32, i32, i32, i32, i32, i32, i32) -> (i32)
++++ b/src/thread/wasm/clone.S
+@@ -0,0 +1,167 @@
++#include <bits/asm.h>
 +
 +.globl __get_tls_base
 +__get_tls_base:
-+	.functype __get_tls_base() -> (i32)
++	.functype __get_tls_base() -> (iLONG)
 +	global.get __tls_base
 +	end_function
 +
-+# The runtime expects to be able to set __tls_base as part of it's clone setup.
++/* The runtime expects to be able to set __tls_base as part of it's clone setup. */
 +.globl __set_tls_base
 +__set_tls_base:
-+	.functype __set_tls_base(i32) -> ()
++	.functype __set_tls_base(iLONG) -> ()
 +	local.get 0
 +	global.set __tls_base
 +	end_function
 +
-+# This function gets called by the host once it detects a clone happening.
++/* This function gets called by the host once it detects a clone happening. */
 +.globl __libc_clone_callback
 +__libc_clone_callback:
 +	.functype __libc_clone_callback() -> (i32)
 +
-+	i32.const 0 # sp (no care)
-+	i32.const 0 # tp (no care)
-+	i32.const 93 # SYS_exit (will be used at the end of this function)
++	iLONG.const 0 /* sp (no care) */
++	iLONG.const 0 /* tp (no care) */
++	iLONG.const 93 /* SYS_exit (will be used at the end of this function) */
 +
-+	# Extract arg
++	/* Extract arg. */
 +	global.get __stack_pointer
-+	i32.const 4
-+	i32.add
-+	i32.load 0
++	iLONG.const SIZEOF_LONG
++	iLONG.add
++	iLONG.load 0
 +
-+	# Extract fn
++	/* Extract fn. */
 +	global.get __stack_pointer
-+	i32.load 0
++	iLONG.load 0
 +
-+	# Deallocate fn+arg+alignemnt
++	/* Deallocate fn+arg+alignemnt (alignment only on 32-bit). */
 +	global.get __stack_pointer
-+	i32.const 16
-+	i32.add
++	iLONG.const 16
++	iLONG.add
 +	global.set __stack_pointer
 +
-+	# Call fn(arg)
-+	call_indirect (i32) -> (i32)
++	/* Call fn(arg). */
++	CALL_INDIRECT_FIXUP
++	call_indirect (iLONG) -> (i32)
 +
-+	# syscall(SYS_exit, the return value from the callback)
++	/* 64: Sign extend return value from handler (int) to syscall arg (long). */
++	INSN_32_64(, i64.extend_i32_s)
++
++	/* syscall(SYS_exit, the return value from the callback) */
 +	call __wasm_syscall_1
++
++	/* 64: Return the result of SYS_exit (long) cast to int. */
++	INSN_32_64(, i32.wrap_i64)
 +	end_function
 +
 +.globl _Clone
 +_Clone:
-+	# int _Clone(fn, stack, flags, arg, ptid, tls, ctid);
-+	#            0   1      2      3    4     5    6
-+	.functype _Clone(i32, i32, i32, i32, i32, i32, i32) -> (i32)
-+	.local i32 /* 7: child_stack */
++	/*
++	 * int _Clone(fn, stack, flags, arg, ptid, tls, ctid);
++	 * .local     0   1      2      3    4     5    6
++	 */
++	.functype _Clone(iLONG, iLONG, i32, iLONG, iLONG, iLONG, iLONG) -> (i32)
++	.local iLONG /* 7: child_stack */
 +
-+	# We save fn+arg on the stack. There are two distincs cases for stack:
-+	# * stack is NULL: the kernel will in this special case copy the value
-+	#   of __stack_pointer to the new task. This means we should fill in fn
-+	#   and arg on our stack. This also implies that the caller uses
-+	#   CLONE_VFORK which pauses the calling task (or it does not care about
-+	#   the stack being corrupted in the caller, which is a very odd case).
-+	# * stack is not NULL: the kernel will in this case set the stack
-+	#   pointer of the new task to the value of the stack argument.
-+	#
-+	# In either case we don't really need to "allocate" space on these
-+	# stacks, but we do it anyway, should the syscall wrappers change in the
-+	# future to call C code. In that case we also need to align the stack.
++	/*
++	 * We save fn+arg on the stack. There are two distincs cases for stack:
++	 * * stack is NULL: the kernel will in this special case copy the value
++	 *   of __stack_pointer to the new task. This means we should fill in fn
++	 *   and arg on our stack. This also implies that the caller uses
++	 *   CLONE_VFORK which pauses the calling task (or it does not care about
++	 *   the stack being corrupted in the caller, which is a very odd case).
++	 * * stack is not NULL: the kernel will in this case set the stack
++	 *   pointer of the new task to the value of the stack argument.
++	 *
++	 * In either case we don't really need to "allocate" space on these
++	 * stacks, but we do it anyway, should the syscall wrappers change in the
++	 * future to call C code. In that case we also need to align the stack.
++	 */
 +
-+	# If stack was NULL, store into __stack_pointer instead. The kernel will
-+	# in this special case copy the value of the stack pointer to the new
-+	# task in the clone syscall. (Allocating space on these stacks is not
-+	# strictly necessary but a nice thing if the syscall function changes
-+	# to a C function in the future - in that case we should also align the
-+	# stack to 16 bytes.) To be consistent, also allocate on non-NULL stack.
++	/*
++	 * If stack was NULL, store into __stack_pointer instead. The kernel will
++	 * in this special case copy the value of the stack pointer to the new
++	 * task in the clone syscall. (Allocating space on these stacks is not
++	 * strictly necessary but a nice thing if the syscall function changes
++	 * to a C function in the future - in that case we should also align the
++	 * stack to 16 bytes.) To be consistent, also allocate on non-NULL stack.
++	 */
 +	block
 +		local.get 1
-+		br_if 0 # if (stack != NULL): break to block 0;
-+		# else if (stack == NULL):
++		INSN_32_64(, i64.eqz)
++		INSN_32_64(, i32.eqz)
++		br_if 0		/* if (stack != NULL): break to block 0; */
++				/* else if (stack == NULL): */
 +
 +		global.get __stack_pointer
-+		i32.const 16
-+		i32.sub
++		iLONG.const 16
++		iLONG.sub
 +		local.tee 7
 +		global.set __stack_pointer
 +	end_block
 +
 +	block
 +		local.get 1
-+		i32.eqz
-+		br_if 0 # if (stack == NULL): break to block 0;
-+		# else if (stack != NULL):
++		iLONG.eqz
++		br_if 0		/* if (stack == NULL): break to block 0; */
++				/* else if (stack != NULL): */
 +
 +		local.get 1
-+		i32.const 16
-+		i32.sub
++		iLONG.const 16
++		iLONG.sub
 +		local.tee 7
 +		local.set 1
 +	end_block
@@ -2283,45 +2385,51 @@ index 0000000..4aa3a7e
 +	 * i.e. we don't pass the decremented __stack_pointer if stack == NULL.
 +	 */
 +
-+	# Store fn at the lowest address.
++	/* Store fn at the lowest address. */
 +	local.get 7
 +	local.get 0
-+	i32.store 0
++	iLONG.store 0
 +
-+	# Store arg at the next-lowest address.
++	/* Store arg at the next-lowest address. */
 +	local.get 7
-+	i32.const 4
-+	i32.add
++	iLONG.const SIZEOF_LONG
++	iLONG.add
 +	local.get 3
-+	i32.store 0
++	iLONG.store 0
 +
-+	# syscall(SYS_clone, clone_flags, newsp, parent_tidptr, child_tidptr, tls)
-+	global.get __stack_pointer # our sp (used when newsp is NULL)
-+	global.get __tls_base # our tp (used when CLONE_SETTLS is not set)
-+	i32.const 220 # SYS_clone
-+	local.get 2 # clone_flags
-+	local.get 1 # newsp (maybe NULL)
-+	local.get 4 # ptid
-+	local.get 6 # ctid
-+	local.get 5 # tls
++	/* syscall(SYS_clone, clone_flags, newsp, parent_tidptr, child_tidptr, tls) */
++	global.get __stack_pointer /* our sp (used when newsp is NULL) */
++	global.get __tls_base /* our tp (used when CLONE_SETTLS is not set) */
++	iLONG.const 220 /* SYS_clone */
++	local.get 2 /* clone_flags */
++	INSN_32_64(, i64.extend_i32_s)
++	local.get 1 /* newsp (maybe NULL) */
++	local.get 4 /* ptid */
++	local.get 6 /* ctid */
++	local.get 5 /* tls */
 +	call __wasm_syscall_5
 +
-+	# On Wasm, we don't end up returning twice - instead wasm_clone_callback
-+	# is called and we can extract fn and arg from __stack_pointer. This
-+	# means that we for sure currently are in the parent when returning.
++	/*
++	 * On Wasm, we don't end up returning twice - instead wasm_clone_callback
++	 * is called and we can extract fn and arg from __stack_pointer. This
++	 * means that we for sure currently are in the parent when returning.
++	 */
 +
 +	block
 +		local.get 1
-+		br_if 0 # if (stack != NULL): break to block 0;
-+		# else if(stack == NULL):
++		INSN_32_64(, i64.eqz)
++		INSN_32_64(, i32.eqz)
++		br_if 0		/* if (stack != NULL): break to block 0; */
++				/* else if(stack == NULL): */
 +
 +		global.get __stack_pointer
-+		i32.const 16
-+		i32.add
++		iLONG.const 16
++		iLONG.add
 +		global.set __stack_pointer
 +	end_block
 +
-+	# (Pass on return value from the above syscall to the caller.)
++	/* Pass on (64: cast) return value from the above syscall to the caller. */
++	INSN_32_64(, i32.wrap_i64)
 +	end_function
 diff --git a/src/unistd/access.c b/src/unistd/access.c
 index d6eed68..449f9b4 100644
@@ -2349,5 +2457,5 @@ index 43052dd..56d650c 100644
  	return 0;
  }
 -- 
-2.25.1
+2.43.0
 

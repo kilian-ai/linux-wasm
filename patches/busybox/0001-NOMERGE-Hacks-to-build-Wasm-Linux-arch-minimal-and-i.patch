@@ -1,4 +1,4 @@
-From 35fd595e73f8f491219be09cb79713bcbba7850e Mon Sep 17 00:00:00 2001
+From 38a1f11a90de225b593035ddf8ff9ec3cefa67ff Mon Sep 17 00:00:00 2001
 From: Joel Severin <joel.severin@icemanor.se>
 Date: Mon, 13 May 2024 23:44:37 +0200
 Subject: [PATCH] NOMERGE: Hacks to build Wasm/Linux arch (minimal and
@@ -17,15 +17,15 @@ Subject: [PATCH] NOMERGE: Hacks to build Wasm/Linux arch (minimal and
  init/init.c                              |   37 +-
  scripts/Makefile.build                   |    2 +-
  scripts/gcc-version.sh                   |    3 +
- scripts/trylink                          |    8 +-
+ scripts/trylink                          |    6 +-
  shell/hush.c                             |  137 ++-
  util-linux/fdisk.c                       |    6 -
- 15 files changed, 1392 insertions(+), 130 deletions(-)
+ 15 files changed, 1391 insertions(+), 129 deletions(-)
  create mode 100644 arch/wasm/Makefile
  create mode 100644 configs/wasm_defconfig
 
 diff --git a/Makefile b/Makefile
-index fa8cb76..8fad6ae 100644
+index fa8cb76..ff3f3d8 100644
 --- a/Makefile
 +++ b/Makefile
 @@ -288,15 +288,15 @@ MAKEFLAGS += -rR
@@ -36,8 +36,8 @@ index fa8cb76..8fad6ae 100644
 -CC		= $(CROSS_COMPILE)gcc
 -LD		= $(CC) -nostdlib
 +AS		= $(CROSS_COMPILE)llvm-as
-+CC		= $(CROSS_COMPILE)clang --target=wasm32-unknown-unknown -Xclang -target-feature -Xclang +atomics -Xclang -target-feature -Xclang +bulk-memory
-+LD		= $(CROSS_COMPILE)wasm-ld
++CC		= $(CROSS_COMPILE)clang
++LD		= $(CROSS_COMPILE)ld.lld
  CPP		= $(CC) -E
 -AR		= $(CROSS_COMPILE)ar
 -NM		= $(CROSS_COMPILE)nm
@@ -1608,18 +1608,9 @@ index 0eb27c7..70887a6 100755
  # tr -d '\r': fix up msdos-style line endings (Cygwin et al)
  MAJ_MIN=$(echo __GNUC__ __GNUC_MINOR__ | $compiler -E -xc - | tr -d '\r' | tail -n 1)
 diff --git a/scripts/trylink b/scripts/trylink
-index 2255dee..cafb1ab 100755
+index 2255dee..7371365 100755
 --- a/scripts/trylink
 +++ b/scripts/trylink
-@@ -75,7 +75,7 @@ check_libc_is_glibc() {
- EXE="$1"
- CC="$2"
- CFLAGS="$3"
--LDFLAGS="$4"
-+LDFLAGS="$4 -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
- O_FILES="$5"
- A_FILES="$6"
- # We try to drop libraries from LDLIBS if build works without them,
 @@ -93,10 +93,10 @@ if ! check_cc "-Wl,--sort-section,alignment"; then
      SORT_SECTION=""
  fi
