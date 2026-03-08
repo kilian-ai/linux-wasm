@@ -74,10 +74,10 @@
   /// Callbacks from within Linux/Wasm out to our host code (cpu is not neccessarily ours).
   const host_callbacks = {
     /// Start secondary CPU.
-    wasm_start_cpu: (cpu, idle_task, start_stack) => {
+    wasm_start_cpu: (cpu, idle_task) => {
       // New web workers cannot be spawned from within a Worker in most browsers. It can currently not be spawned from
       // within a SharedWorker in any browser. Do it on the main thread instead.
-      port.postMessage({ method: "start_secondary", cpu: cpu, idle_task: idle_task, start_stack: start_stack });
+      port.postMessage({ method: "start_secondary", cpu: cpu, idle_task: idle_task });
     },
 
     /// Stop secondary CPU (rather abruptly).
@@ -345,7 +345,7 @@
           throw new Error("_start did not even succeed in allocating 16 pages of RAM, aborting...");
         } else if (message.runner_type == "secondary_cpu") {
           // start_secondary() will never return. It can be killed by terminate() on this Worker.
-          vmlinux_instance.exports._start_secondary(message.start_stack);
+          vmlinux_instance.exports._start_secondary(message.idle_task);
 
           throw new Error("start_secondary returned");
         } else if (message.runner_type == "task") {

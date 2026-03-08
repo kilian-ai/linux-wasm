@@ -38,9 +38,8 @@ const linux = async (worker_url, vmlinux, boot_cmdline, initrd, log, console_wri
         throw new Error("Trying to start secondary cpu with ID <= 0");
       }
 
-      log("Starting cpu " + message.cpu + " (" + message.idle_task + ")" +
-        " with start stack " + message.start_stack);
-      make_cpu(message.cpu, message.idle_task, message.start_stack);
+      log("Starting cpu " + message.cpu + " (" + message.idle_task + ")");
+      make_cpu(message.cpu, message.idle_task);
     },
 
     stop_secondary: (message) => {
@@ -123,10 +122,10 @@ const linux = async (worker_url, vmlinux, boot_cmdline, initrd, log, console_wri
    * system, including bringing up secondary CPUs at the end, while for secondary CPUs, this just means some
    * book-keeping before dropping into their own idle tasks.
    */
-  const make_cpu = (cpu, idle_task, start_stack) => {
+  const make_cpu = (cpu, idle_task) => {
     const options = {
       runner_type: (cpu == 0) ? "primary_cpu" : "secondary_cpu",
-      start_stack: start_stack,  // undefined for CPU 0
+      idle_task: idle_task,
     };
 
     if (cpu == 0) {
