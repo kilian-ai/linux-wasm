@@ -146,12 +146,52 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         LW_KERNEL_MAKE+=" REAL_LLVM=$LW_INSTALL/llvm/bin/"
         LW_KERNEL_MAKE+=" CROSS_COMPILE=wasm32-unknown-unknown-"
         LW_KERNEL_MAKE+=" HOSTCC=gcc"
+        LW_KERNEL_CONFIG="./scripts/config --file $LW_BUILD/kernel-$LW_VARIANT/.config"
         (
             cd "$LW_SRC/kernel"
-            #$LW_KERNEL_MAKE menuconfig
-            #exit 1
 
-            $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
+            if [ "$LW_REBUILD_KERNEL_DEFCONFIG" = "1" ]; then
+                # This creates a useful Wasm defconfig from scratch using tinyconfig.
+                $LW_KERNEL_MAKE tinyconfig
+
+                $LW_KERNEL_CONFIG --disable CONFIG_SLUB_TINY
+                $LW_KERNEL_CONFIG --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
+                $LW_KERNEL_CONFIG --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
+                $LW_KERNEL_CONFIG --enable CONFIG_BLK_DEV_INITRD
+                $LW_KERNEL_CONFIG --enable CONFIG_BINFMT_SCRIPT
+                $LW_KERNEL_CONFIG --enable CONFIG_BINFMT_WASM
+                $LW_KERNEL_CONFIG --enable CONFIG_TTY
+                $LW_KERNEL_CONFIG --enable CONFIG_HVC_WASM
+                $LW_KERNEL_CONFIG --enable CONFIG_NO_HZ_FULL
+                $LW_KERNEL_CONFIG --enable CONFIG_PROC_FS
+                $LW_KERNEL_CONFIG --enable CONFIG_SYSFS
+                $LW_KERNEL_CONFIG --enable CONFIG_BLOCK
+                $LW_KERNEL_CONFIG --enable CONFIG_MULTIUSER
+                $LW_KERNEL_CONFIG --enable CONFIG_POSIX_TIMERS
+                $LW_KERNEL_CONFIG --enable CONFIG_PRINTK
+                $LW_KERNEL_CONFIG --enable CONFIG_BUG
+                $LW_KERNEL_CONFIG --enable CONFIG_FUTEX
+                $LW_KERNEL_CONFIG --enable CONFIG_EPOLL
+                $LW_KERNEL_CONFIG --enable CONFIG_SIGNALFD
+                $LW_KERNEL_CONFIG --enable CONFIG_TIMERFD
+                $LW_KERNEL_CONFIG --enable CONFIG_EVENTFD
+                $LW_KERNEL_CONFIG --enable CONFIG_ADVISE_SYSCALLS
+
+                if [ "$LW_ARCH" = "wasm64" ]; then
+                    $LW_KERNEL_CONFIG --enable CONFIG_64BIT
+                fi
+
+                # Fixup dependencies as config --enable only sets direct values.
+                $LW_KERNEL_MAKE olddefconfig
+
+                # For inspection. Any changes should ideally go into this script.
+                #$LW_KERNEL_MAKE menuconfig
+                # Don't forget to save the .config to arch/wasm/configs when done.
+            else
+                echo "Generating .config from ${LW_VARIANT}_defconfig"
+                $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
+            fi
+
             $LW_KERNEL_MAKE -j $LW_JOBS_KERNEL_COMPILE V=1
             $LW_KERNEL_MAKE headers_install
         )
