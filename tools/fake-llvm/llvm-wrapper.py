@@ -82,14 +82,32 @@ def rewrite_clang(original_args):
 
 
 def rewrite_lld(original_args):
+    if "-v" in original_args or "--version" in original_args:
+        return original_args[:]
+
     args = []
     group = None
     is_m = False
     max_memory = MAX_MEMORY_WASM32
-    for arg in original_args:
-        if arg in ("-v", "--version"):
-            # Abort our looping, and just run the original version check.
-            return original_args[:]
+    simple_arg_preamble = None
+    drop_next = False
+    for arg, peek in zip(original_args, original_args[1:] + [None]):
+        if drop_next:
+            drop_next = False
+            continue
+
+        if len(arg) > 1 and arg[0] == "-" and arg[1] != "-":
+            simple_arg_preamble = arg[1:]
+            if len(arg) > 2:
+                simple_arg = (arg[0:2], arg[2:])
+            else:
+                simple_arg = (arg, peek)
+        else:
+            if simple_arg_preamble is None:
+                simple_arg = None
+            else:
+                simple_arg = (simple_arg_preamble, arg)
+            simple_arg_preamble = None
 
         if group is not None:
             if arg == "--end-group":
@@ -115,7 +133,12 @@ def rewrite_lld(original_args):
         elif arg.startswith("--build-id="):
             # Tracked in LLVM D107662.
             # Drop for now.
-            pass
+            continue
+
+        elif simple_arg == ("-z", "noexecstack"):
+            if arg == "-z":
+                drop_next = True
+            continue
 
         else:
             args.append(arg)
