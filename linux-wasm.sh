@@ -134,70 +134,65 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
     handled=1;;&
 
     "build-kernel"|"all-kernel"|"build"|"all"|"build-os")
-        mkdir -p "$LW_BUILD/kernel-$LW_VARIANT"
+        LW_BUILD_KERNEL="$LW_BUILD/kernel-$LW_VARIANT"
+        LW_INSTALL_KERNEL="$LW_INSTALL/kernel-$LW_VARIANT"
+        mkdir -p "$LW_BUILD_KERNEL"
         # Note: LLVM=/blah/ MUST start AND END with a trailing slash, or it will be interpreted as LLVM=1 (which looks for system clang etc.)!
         # Unfortunately this means the value cannot be escaped in 'single quotes', which means the path cannot contain spaces...
         # Note: kernel docs often show setting CC=clang but don't do this (or you will get system clang due to the above).
         # Another similar problem is that O= does not work with 'single quote' escaping either in recent kernel versions.
         LW_KERNEL_MAKE="make"
-        LW_KERNEL_MAKE+=" O=$LW_BUILD/kernel-$LW_VARIANT"
+        LW_KERNEL_MAKE+=" O=$LW_BUILD_KERNEL"
         LW_KERNEL_MAKE+=" ARCH=wasm"
         LW_KERNEL_MAKE+=" LLVM=$LW_ROOT/tools/fake-llvm/"
         LW_KERNEL_MAKE+=" REAL_LLVM=$LW_INSTALL/llvm/bin/"
         LW_KERNEL_MAKE+=" CROSS_COMPILE=wasm32-unknown-unknown-"
         LW_KERNEL_MAKE+=" HOSTCC=gcc"
-        LW_KERNEL_CONFIG="./scripts/config --file $LW_BUILD/kernel-$LW_VARIANT/.config"
+        LW_KERNEL_MOD_CONFIG="./scripts/config --file"
         (
             cd "$LW_SRC/kernel"
 
-            if [ "$LW_REBUILD_KERNEL_DEFCONFIG" = "1" ]; then
-                # This creates a useful Wasm defconfig from scratch using tinyconfig.
-                $LW_KERNEL_MAKE tinyconfig
+            if [ "$LW_KERNEL_CONFIG" = "rebuild" ]; then
+                # This creates a useful Wasm .config from scratch using tinyconfig.
+                $LW_KERNEL_MAKE tinyconfig "$LW_ARCH.config" base.config
 
-                $LW_KERNEL_CONFIG --disable CONFIG_SLUB_TINY
-                $LW_KERNEL_CONFIG --disable CONFIG_CC_OPTIMIZE_FOR_SIZE
-                $LW_KERNEL_CONFIG --enable CONFIG_CC_OPTIMIZE_FOR_PERFORMANCE
-                $LW_KERNEL_CONFIG --enable CONFIG_BLK_DEV_INITRD
-                $LW_KERNEL_CONFIG --enable CONFIG_BINFMT_SCRIPT
-                $LW_KERNEL_CONFIG --enable CONFIG_BINFMT_WASM
-                $LW_KERNEL_CONFIG --enable CONFIG_TTY
-                $LW_KERNEL_CONFIG --enable CONFIG_HVC_WASM
-                $LW_KERNEL_CONFIG --enable CONFIG_NO_HZ_FULL
-                $LW_KERNEL_CONFIG --enable CONFIG_PROC_FS
-                $LW_KERNEL_CONFIG --enable CONFIG_SYSFS
-                $LW_KERNEL_CONFIG --enable CONFIG_BLOCK
-                $LW_KERNEL_CONFIG --enable CONFIG_MULTIUSER
-                $LW_KERNEL_CONFIG --enable CONFIG_POSIX_TIMERS
-                $LW_KERNEL_CONFIG --enable CONFIG_PRINTK
-                $LW_KERNEL_CONFIG --enable CONFIG_BUG
-                $LW_KERNEL_CONFIG --enable CONFIG_FUTEX
-                $LW_KERNEL_CONFIG --enable CONFIG_EPOLL
-                $LW_KERNEL_CONFIG --enable CONFIG_SIGNALFD
-                $LW_KERNEL_CONFIG --enable CONFIG_TIMERFD
-                $LW_KERNEL_CONFIG --enable CONFIG_EVENTFD
-                $LW_KERNEL_CONFIG --enable CONFIG_ADVISE_SYSCALLS
+                # Package a cleaned-up .config as ${LW_VARIANT}_defconfig.
+                $LW_KERNEL_MAKE savedefconfig
+                # If there is some problem with build environment stability this may come in handy:
+                # $LW_KERNEL_MOD_CONFIG "$LW_BUILD_KERNEL/defconfig" --undefine CONFIG_xxx
+                mv "$LW_BUILD_KERNEL/defconfig" "$LW_SRC/kernel/arch/wasm/configs/${LW_VARIANT}_defconfig"
 
-                if [ "$LW_ARCH" = "wasm64" ]; then
-                    $LW_KERNEL_CONFIG --enable CONFIG_64BIT
-                fi
-
-                # Fixup dependencies as config --enable only sets direct values.
-                $LW_KERNEL_MAKE olddefconfig
-
-                # For inspection. Any changes should ideally go into this script.
-                #$LW_KERNEL_MAKE menuconfig
-                # Don't forget to save the .config to arch/wasm/configs when done.
-            else
-                echo "Generating .config from ${LW_VARIANT}_defconfig"
+                # Actually use it to see that it works.
                 $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
+            elif [ "$LW_KERNEL_CONFIG" == "yes" ]; then
+                # We require some fixups for allyesconfig.
+                KCONFIG_ALLCONFIG="$LW_SRC/kernel/arch/wasm/configs/$LW_ARCH.config" \
+                    $LW_KERNEL_MAKE allyesconfig allyes.config
+            elif [ "$LW_KERNEL_CONFIG" == "no" ]; then
+                KCONFIG_ALLCONFIG="$LW_SRC/kernel/arch/wasm/configs/$LW_ARCH.config" \
+                    $LW_KERNEL_MAKE allnoconfig
+            elif [ "$LW_KERNEL_CONFIG" == "dev" ]; then
+                $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
+                $LW_KERNEL_MOD_CONFIG "$LW_BUILD_KERNEL/.config" --enable CONFIG_WERROR
+                $LW_KERNEL_MAKE olddefconfig
+            elif [ "$LW_KERNEL_CONFIG" == "" ]; then
+                $LW_KERNEL_MAKE "${LW_VARIANT}_defconfig"
+            else
+                echo "Unknown LW_KERNEL_CONFIG=${LW_KERNEL_CONFIG}"
+                exit 1
+            fi
+
+            if [ "$LW_KERNEL_MENUCONFIG" = "1" ]; then
+                # For inspection. Any changes should ideally go into this script for defconfig generation.
+                $LW_KERNEL_MAKE menuconfig
             fi
 
             $LW_KERNEL_MAKE -j $LW_JOBS_KERNEL_COMPILE V=1
             $LW_KERNEL_MAKE headers_install
         )
-        mkdir -p "$LW_INSTALL/kernel-$LW_VARIANT/include"
-        cp -R "$LW_BUILD/kernel-$LW_VARIANT/usr/include/." "$LW_INSTALL/kernel-$LW_VARIANT/include"
-        cp "$LW_BUILD/kernel-$LW_VARIANT/vmlinux" "$LW_INSTALL/kernel-$LW_VARIANT/vmlinux.wasm"
+        mkdir -p "$LW_INSTALL_KERNEL/include"
+        cp -R "$LW_BUILD_KERNEL/usr/include/." "$LW_INSTALL_KERNEL/include"
+        cp "$LW_BUILD_KERNEL/vmlinux" "$LW_INSTALL_KERNEL/vmlinux.wasm"
     handled=1;;&
 
     "build-musl"|"all-musl"|"build"|"all"|"build-os")
