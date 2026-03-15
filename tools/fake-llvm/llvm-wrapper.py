@@ -143,6 +143,10 @@ def rewrite_lld(original_args):
                 drop_next = True
             continue
 
+        elif arg == "-X":
+            # Means discard locals (C goto / asm jump labels). Not used in Wasm.
+            continue
+
         else:
             args.append(arg)
 
