@@ -53,7 +53,10 @@ def rewrite_clang(original_args):
     for feature in ("atomics", "bulk-memory"):
         args += f"-Xclang -target-feature -Xclang +{feature}".split(" ")
 
-    args.append("-D__builtin_return_address=")
+    # Transforms code like __builtin_return_address(0) to (void*)(0). Note that
+    # __builtin_return_address is allow return an unspecified value for other
+    # arguments than 0 (indeed __builtin_return_address(0) is only ever used).
+    args.append("-D__builtin_return_address=(void*)")
 
     # Filter out -mwasm32 and -mwasm64 that some applications may concat on from
     # LDFLGAGS. If we get them we link with the clang driver by -Wl,-mwasm32/64.
