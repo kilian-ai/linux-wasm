@@ -273,18 +273,6 @@
         },
       };
 
-      // We have to fixup unimplemented syscalls as they are declared but not defined by vmlinux (to avoid the
-      // ni_syscall soup with unimplemented syscalls, which fails on Wasm due to a variable amount of arguments). Since
-      // these syscalls should not really be called anyway, we can have a slow js stub deal with them, and it can handle
-      // variable arguments gracefully!
-      const ni_syscall = () => { return -38 /* aka. -ENOSYS */; };
-      for (const imported of WebAssembly.Module.imports(message.vmlinux)) {
-        if (imported.name.startsWith("sys_") && imported.module == "env"
-          && imported.kind == "function") {
-          import_object.env[imported.name] = ni_syscall;
-        }
-      }
-
       // This is a global error handler that is used when calling Wasm code.
       const wasm_error = (error) => {
         log("Wasm crash: " + error.toString());
