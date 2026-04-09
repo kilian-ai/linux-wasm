@@ -83,6 +83,11 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         git -C "$LW_SRC/busybox" am < "$LW_ROOT/patches/busybox/0001-NOMERGE-Hacks-to-build-Wasm-Linux-arch-minimal-and-i.patch"
     handled=1;;&
 
+    "fetch-quickjs"|"all-quickjs"|"fetch"|"all")
+        mkdir -p "$LW_SRC/quickjs"
+        git clone --depth 1 https://github.com/bellard/quickjs.git "$LW_SRC/quickjs"
+    handled=1;;&
+
     "fetch-initramfs"|"all-initramfs"|"fetch"|"all")
         # Nothing to do here.
         # We already have patches/initramfs/initramfs-base.cpio pre-built by toos/make-initramfs-base.sh in the repo.
@@ -187,6 +192,53 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         done
     handled=1;;&
 
+    "build-quickjs"|"all-quickjs"|"build"|"all"|"build-os")
+        mkdir -p "$LW_BUILD/quickjs"
+        mkdir -p "$LW_INSTALL/quickjs/bin"
+        (
+            cd "$LW_BUILD/quickjs"
+
+            # Cross-compile QuickJS for wasm32 using the Linux/Wasm toolchain.
+            # We compile manually rather than using QuickJS's Makefile because
+            # cross-compilation to wasm32-unknown-unknown isn't a standard target.
+            QJS_CC="$LW_INSTALL/llvm/bin/clang"
+            QJS_AR="$LW_INSTALL/llvm/bin/llvm-ar"
+            QJS_SRC="$LW_SRC/quickjs"
+            WASM_FLAGS="--target=wasm32-unknown-unknown --sysroot=$LW_INSTALL/musl"
+            WASM_FLAGS+=" -Xclang -target-feature -Xclang +atomics"
+            WASM_FLAGS+=" -Xclang -target-feature -Xclang +bulk-memory"
+            WASM_FLAGS+=" -fPIC -D__linux__ -D_GNU_SOURCE"
+            WASM_FLAGS+=" -isystem $LW_INSTALL/busybox-kernel-headers"
+            WASM_FLAGS+=" -DCONFIG_VERSION=\\\"$(cat $QJS_SRC/VERSION 2>/dev/null || echo wasm)\\\""
+            WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
+
+            CFLAGS_OPT="$WASM_FLAGS -O2"
+            LDFLAGS="-Wl,-shared $WASM_FLAGS --rtlib=compiler-rt"
+
+            echo "Compiling QuickJS objects for wasm32..."
+            for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c; do
+                obj="$(basename $src .c).o"
+                echo "  CC $src -> $obj"
+                $QJS_CC $CFLAGS_OPT -c -o "$obj" "$QJS_SRC/$src"
+            done
+
+            # repl.c and qjs.c
+            echo "  CC repl.c -> repl.o"
+            $QJS_CC $CFLAGS_OPT -c -o repl.o "$QJS_SRC/repl.c"
+            echo "  CC qjs.c -> qjs.o"
+            $QJS_CC $CFLAGS_OPT -c -o qjs.o "$QJS_SRC/qjs.c"
+
+            echo "Linking qjs..."
+            $QJS_CC $LDFLAGS -o qjs \
+                qjs.o repl.o quickjs.o dtoa.o libregexp.o libunicode.o \
+                cutils.o quickjs-libc.o -lm
+
+            # Install the qjs binary
+            cp qjs "$LW_INSTALL/quickjs/bin/qjs"
+            echo "QuickJS installed to $LW_INSTALL/quickjs/bin/qjs"
+        )
+    handled=1;;&
+
     "build-initramfs"|"all-initramfs"|"build"|"all"|"build-os")
         mkdir -p "$LW_INSTALL/initramfs"
 
@@ -208,6 +260,14 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             echo "./init" | cpio -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
         )
 
+        # Copy QuickJS into the initramfs (if built).
+        if [ -f "$LW_INSTALL/quickjs/bin/qjs" ]; then
+            (
+                cd "$LW_INSTALL/quickjs"
+                find . -print0 | cpio --null -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+            )
+        fi
+
         # Finally we should zip it up so that it takes less space. This is the file to distribute.
         rm -f "$LW_INSTALL/initramfs/initramfs.cpio.gz"
         gzip "$LW_INSTALL/initramfs/initramfs.cpio"
@@ -224,7 +284,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
         echo "    build-xxx    -- Build component xxx (no fetching)."
         echo "    build-tools  -- Build all build tool components (llvm)."
         echo "    build-os     -- Build all OS software (excluding build tools)."
-        echo "  and components include (in order): llvm, kernel, musl, busybox-kernel-headers, busybox, initramfs."
+        echo "  and components include (in order): llvm, kernel, musl, busybox-kernel-headers, busybox, quickjs, initramfs."
         echo ""
         echo "Fetch will download and patch the source. Build will configure, compile and install (to a folder in the workspace)."
         echo ""

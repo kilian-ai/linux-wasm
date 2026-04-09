@@ -5,6 +5,9 @@ mount -t sysfs none /sys
 
 echo
 echo "Welcome to Linux running on Wasm!"
+if [ -x /bin/qjs ]; then
+echo "  QuickJS is available: qjs"
+fi
 echo "Known bugs:"
 echo "   * Terminal input freezes after a while (timer issue)."
 echo "   * dup_fd, wq_worker_comm, rcu_os crash (memory corruption (fixed?))."
