@@ -227,7 +227,20 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             echo "  Generating repl.c from repl.js..."
             ./host_qjsc -c -o repl.c -m "$QJS_SRC/repl.js"
 
-            # Step 2: Cross-compile all QuickJS sources for wasm32
+            # Step 2: Create dl stubs (dlopen/dlsym/dlclose)
+            # The WASM kernel doesn't provide __dlsym_time64 etc., so we provide
+            # no-op stubs that return NULL/error. This prevents LinkError at runtime.
+            cat > dl_stubs.c << 'STUBS_EOF'
+#include <stddef.h>
+void *dlopen(const char *f, int flags) { (void)f; (void)flags; return NULL; }
+void *dlsym(void *h, const char *s) { (void)h; (void)s; return NULL; }
+int dlclose(void *h) { (void)h; return 0; }
+char *dlerror(void) { return "dlopen not supported on WASM"; }
+STUBS_EOF
+            echo "  CC dl_stubs.c -> dl_stubs.o"
+            $QJS_CC $CFLAGS_OPT -c -o dl_stubs.o dl_stubs.c
+
+            # Step 3: Cross-compile all QuickJS sources for wasm32
             echo "Compiling QuickJS objects for wasm32..."
             for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c; do
                 obj="$(basename $src .c).o"
@@ -244,7 +257,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             echo "Linking qjs..."
             $QJS_CC $LDFLAGS -o qjs \
                 qjs.o repl.o quickjs.o dtoa.o libregexp.o libunicode.o \
-                cutils.o quickjs-libc.o -lm
+                cutils.o quickjs-libc.o dl_stubs.o -lm
 
             # Install the qjs binary
             cp qjs "$LW_INSTALL/quickjs/bin/qjs"
