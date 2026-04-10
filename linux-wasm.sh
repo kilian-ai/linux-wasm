@@ -352,7 +352,7 @@ static int load_all_intrinsics(JSContext *ctx, const char *tag) {
 }
 
 int main(int argc, char **argv) {
-    printf("[diag] QuickJS WASM diagnostic v4\n"); fflush(stdout);
+    printf("[diag] QuickJS WASM diagnostic v6\n"); fflush(stdout);
     printf("[diag] initial brk = %p\n", sbrk(0)); fflush(stdout);
 
     /* --- Test 1: Memory ceiling discovery --- */
@@ -416,19 +416,37 @@ int main(int argc, char **argv) {
             JS_FreeValue(ctx, global);
         }
         
-        printf("[2] Simple arithmetic test via JS_Eval...\n"); fflush(stdout);
-        printf("[2]   - about to call JS_Eval(ctx, \"1+1\", 3, \"<test>\", 0)\n"); fflush(stdout);
-        printf("[2]   - JS_EVAL_TYPE_GLOBAL=%d\n", JS_EVAL_TYPE_GLOBAL); fflush(stdout);
-        fflush(stdout); /* flush before potential crash */
-        JSValue val = JS_Eval(ctx, "1+1", 3, "<test>", JS_EVAL_TYPE_GLOBAL);
-        printf("[2] POST-EVAL: returned from JS_Eval, val=%p\n", (void*)val); fflush(stdout);
-        if (JS_IsException(val)) {
-            printf("[2] EXCEPTION from eval\n"); fflush(stdout);
+        /* Step A: compile-only — does parse+bytecode compile without executing */
+        printf("[2] Step A: JS_Eval COMPILE_ONLY test...\n"); fflush(stdout);
+        printf("[2]   flag = JS_EVAL_TYPE_GLOBAL|JS_EVAL_FLAG_COMPILE_ONLY = %d\n",
+               JS_EVAL_TYPE_GLOBAL | (1 << 5)); fflush(stdout);
+        JSValue fn = JS_Eval(ctx, "1+1", 3, "<test>",
+                             JS_EVAL_TYPE_GLOBAL | (1 << 5));
+        printf("[2] Step A returned, tag=%d, is_exception=%d\n",
+               JS_VALUE_GET_TAG(fn), JS_IsException(fn)); fflush(stdout);
+        if (JS_IsException(fn)) {
+            JSValue exc = JS_GetException(ctx);
+            const char *msg = JS_ToCString(ctx, exc);
+            printf("[2] Compile-only EXCEPTION: %s\n", msg ? msg : "(null)"); fflush(stdout);
+            if (msg) JS_FreeCString(ctx, msg);
+            JS_FreeValue(ctx, exc);
         } else {
-            int32_t r; JS_ToInt32(ctx, &r, val);
-            printf("[2] result = %d\n", r); fflush(stdout);
+            printf("[2] Compile-only OK (bytecode object tag=%d)\n",
+                   JS_VALUE_GET_TAG(fn)); fflush(stdout);
+
+            /* Step B: execute the compiled bytecode */
+            printf("[2] Step B: JS_EvalFunction (execution)...\n"); fflush(stdout);
+            JSValue val = JS_EvalFunction(ctx, fn); /* consumes fn */
+            printf("[2] Step B returned, tag=%d\n", JS_VALUE_GET_TAG(val)); fflush(stdout);
+            if (JS_IsException(val)) {
+                printf("[2] Execution EXCEPTION\n"); fflush(stdout);
+            } else {
+                int32_t r = 0;
+                JS_ToInt32(ctx, &r, val);
+                printf("[2] result = %d (expected 2)\n", r); fflush(stdout);
+            }
+            JS_FreeValue(ctx, val);
         }
-        JS_FreeValue(ctx, val);
 
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
