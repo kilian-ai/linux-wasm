@@ -471,10 +471,34 @@ int main(int argc, char **argv) {
             printf("[2] Compile-only OK (bytecode object tag=%d)\n",
                    JS_VALUE_GET_TAG(fn)); fflush(stdout);
 
-            /* Step B: execute the compiled bytecode */
-            printf("[2] Step B: JS_EvalFunction (execution)...\n"); fflush(stdout);
+            /* Step B: basic int32 roundtrip (no bytecode execution) */
+            printf("[2] Step B: int32 roundtrip...\n"); fflush(stdout);
+            {
+                JSValue num = JS_NewInt32(ctx, 42);
+                int32_t v = 0;
+                JS_ToInt32(ctx, &v, num);
+                printf("[2] Step B result = %d (expected 42)\n", v); fflush(stdout);
+                JS_FreeValue(ctx, num);
+            }
+
+            /* Step C: one-shot compile+execute (no COMPILE_ONLY) */
+            printf("[2] Step C: JS_Eval '2+3' (one-shot)...\n"); fflush(stdout);
+            {
+                JSValue v = JS_Eval(ctx, "2+3", 3, "<test-c>", JS_EVAL_TYPE_GLOBAL);
+                printf("[2] Step C returned, tag=%d, exc=%d\n",
+                       JS_VALUE_GET_TAG(v), JS_IsException(v)); fflush(stdout);
+                if (!JS_IsException(v)) {
+                    int32_t r = 0;
+                    JS_ToInt32(ctx, &r, v);
+                    printf("[2] Step C result = %d (expected 5)\n", r); fflush(stdout);
+                }
+                JS_FreeValue(ctx, v);
+            }
+
+            /* Step D: execute pre-compiled bytecode via JS_EvalFunction */
+            printf("[2] Step D: JS_EvalFunction...\n"); fflush(stdout);
             JSValue val = JS_EvalFunction(ctx, fn); /* consumes fn */
-            printf("[2] Step B returned, tag=%d\n", JS_VALUE_GET_TAG(val)); fflush(stdout);
+            printf("[2] Step D returned, tag=%d\n", JS_VALUE_GET_TAG(val)); fflush(stdout);
             if (JS_IsException(val)) {
                 printf("[2] Execution EXCEPTION\n"); fflush(stdout);
             } else {
