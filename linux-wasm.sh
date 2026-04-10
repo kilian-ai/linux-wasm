@@ -12,25 +12,25 @@
 
 set -e
 
-LW_ROOT="$(realpath -s "$(dirname "$0")")"
+LW_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # (All paths below are resolved as absolute. This is required for the other parts of the script to work properly.)
 
 # Path to workspace (will set LW_SRC, LW_BUILD, LW_INSTALL ... paths).
 : "${LW_WORKSPACE:=$LW_ROOT/workspace}"
-LW_WORKSPACE="$(realpath -sm "$LW_WORKSPACE")"
+LW_WORKSPACE="$(cd "$LW_WORKSPACE" 2>/dev/null && pwd || echo "$LW_WORKSPACE")"
 
 # Path to where sources will be downloaded and patched.
 : "${LW_SRC:=$LW_WORKSPACE/src}"
-LW_SRC="$(realpath -sm "$LW_SRC")"
+LW_SRC="$(cd "$LW_SRC" 2>/dev/null && pwd || echo "$LW_SRC")"
 
 # Path to where each software component will be built.
 : "${LW_BUILD:=$LW_WORKSPACE/build}"
-LW_BUILD="$(realpath -sm "$LW_BUILD")"
+LW_BUILD="$(cd "$LW_BUILD" 2>/dev/null && pwd || echo "$LW_BUILD")"
 
 # Path to where each software component will be installed.
 : "${LW_INSTALL:=$LW_WORKSPACE/install}"
-LW_INSTALL="$(realpath -sm "$LW_INSTALL")"
+LW_INSTALL="$(cd "$LW_INSTALL" 2>/dev/null && pwd || echo "$LW_INSTALL")"
 
 # Flags used with git. --depth 1 is recommended to avoid downloading a lot of history.
 : "${LW_GITFLAGS:=--depth 1}"
@@ -212,7 +212,7 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             QJS_VERSION=$(cat "$QJS_SRC/VERSION" 2>/dev/null || echo wasm)
             WASM_FLAGS+=' -DCONFIG_VERSION="'"$QJS_VERSION"'"'
             WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
-            CFLAGS_OPT="$WASM_FLAGS -O0 -DNDEBUG"
+            CFLAGS_OPT="$WASM_FLAGS -O2 -DNDEBUG"
             LDFLAGS="$WASM_FLAGS --rtlib=compiler-rt -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
 
             # Patch quickjs.c: disable CONFIG_STACK_CHECK for WASM.
@@ -397,8 +397,31 @@ int main(int argc, char **argv) {
 
         if (load_all_intrinsics(ctx, "2") < 0) goto test3;
 
-        printf("[2] Eval '1+1'...\n"); fflush(stdout);
+        printf("[2] Pre-eval diagnostics...\n"); fflush(stdout);
+        printf("[2]   - ctx=%p\n", (void*)ctx); fflush(stdout);
+        printf("[2]   - sbrk(0)=%p\n", sbrk(0)); fflush(stdout);
+        printf("[2] Checking Object builtin via global access...\n"); fflush(stdout);
+        JSValue global = JS_GetGlobalObject(ctx);
+        if (JS_IsException(global)) {
+            printf("[2]   ERROR: GetGlobalObject failed\n"); fflush(stdout);
+        } else {
+            printf("[2]   OK: global object accessible\n"); fflush(stdout);
+            JSValue obj_ctor = JS_GetPropertyStr(ctx, global, "Object");
+            if (JS_IsException(obj_ctor)) {
+                printf("[2]   ERROR: Object not found in global\n"); fflush(stdout);
+            } else {
+                printf("[2]   OK: Object found (tag=%d)\n", JS_VALUE_GET_TAG(obj_ctor)); fflush(stdout);
+                JS_FreeValue(ctx, obj_ctor);
+            }
+            JS_FreeValue(ctx, global);
+        }
+        
+        printf("[2] Simple arithmetic test via JS_Eval...\n"); fflush(stdout);
+        printf("[2]   - about to call JS_Eval(ctx, \"1+1\", 3, \"<test>\", 0)\n"); fflush(stdout);
+        printf("[2]   - JS_EVAL_TYPE_GLOBAL=%d\n", JS_EVAL_TYPE_GLOBAL); fflush(stdout);
+        fflush(stdout); /* flush before potential crash */
         JSValue val = JS_Eval(ctx, "1+1", 3, "<test>", JS_EVAL_TYPE_GLOBAL);
+        printf("[2] POST-EVAL: returned from JS_Eval, val=%p\n", (void*)val); fflush(stdout);
         if (JS_IsException(val)) {
             printf("[2] EXCEPTION from eval\n"); fflush(stdout);
         } else {
