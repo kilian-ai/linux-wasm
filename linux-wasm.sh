@@ -209,12 +209,25 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             WASM_FLAGS+=" -Xclang -target-feature -Xclang +bulk-memory"
             WASM_FLAGS+=" -fPIC -D__linux__ -D_GNU_SOURCE"
             WASM_FLAGS+=" -isystem $LW_INSTALL/busybox-kernel-headers"
-            WASM_FLAGS+=" -DCONFIG_VERSION=\\\"$(cat $QJS_SRC/VERSION 2>/dev/null || echo wasm)\\\""
+            QJS_VERSION=$(cat "$QJS_SRC/VERSION" 2>/dev/null || echo wasm)
+            WASM_FLAGS+=' -DCONFIG_VERSION="'"$QJS_VERSION"'"'
             WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
 
             CFLAGS_OPT="$WASM_FLAGS -O2"
-            LDFLAGS="-Wl,-shared $WASM_FLAGS --rtlib=compiler-rt"
+            LDFLAGS="$WASM_FLAGS --rtlib=compiler-rt -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
 
+            # Step 1: Build host-native qjsc (the QuickJS compiler) to generate repl.c from repl.js
+            echo "Building host-native qjsc to generate repl.c..."
+            HOST_CFLAGS="-O2 -DCONFIG_VERSION=\"$QJS_VERSION\" -D_GNU_SOURCE"
+            for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c qjsc.c; do
+                gcc $HOST_CFLAGS -c -o "host_$(basename $src .c).o" "$QJS_SRC/$src"
+            done
+            gcc -o host_qjsc host_qjsc.o host_quickjs.o host_dtoa.o host_libregexp.o \
+                host_libunicode.o host_cutils.o host_quickjs-libc.o -lm -lpthread -ldl
+            echo "  Generating repl.c from repl.js..."
+            ./host_qjsc -c -o repl.c -m "$QJS_SRC/repl.js"
+
+            # Step 2: Cross-compile all QuickJS sources for wasm32
             echo "Compiling QuickJS objects for wasm32..."
             for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c; do
                 obj="$(basename $src .c).o"
@@ -222,9 +235,9 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
                 $QJS_CC $CFLAGS_OPT -c -o "$obj" "$QJS_SRC/$src"
             done
 
-            # repl.c and qjs.c
+            # repl.c (generated) and qjs.c
             echo "  CC repl.c -> repl.o"
-            $QJS_CC $CFLAGS_OPT -c -o repl.o "$QJS_SRC/repl.c"
+            $QJS_CC $CFLAGS_OPT -c -o repl.o repl.c
             echo "  CC qjs.c -> qjs.o"
             $QJS_CC $CFLAGS_OPT -c -o qjs.o "$QJS_SRC/qjs.c"
 
