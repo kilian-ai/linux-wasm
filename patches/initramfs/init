@@ -1,11 +1,16 @@
 #!/bin/sh
 
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
 mount -t proc none /proc
 mount -t sysfs none /sys
 
 # Some runtime helpers expect HOME and a writable history location.
 mkdir -p /home
 export HOME=/home
+
+# Loopback must be up for localhost resolution and 127.0.0.1 traffic.
+/sbin/ifconfig lo 127.0.0.1 up 2>/dev/null
 
 # Configure the wasm virtual NIC using BusyBox applets that are available
 # in this rootfs. Do not use `ip` here because init may not have /sbin on PATH.
@@ -14,8 +19,8 @@ net_ready=0
 i=0
 while [ "$i" -lt 20 ]; do
 	if [ -d /sys/class/net/wasm0 ]; then
-		ifconfig wasm0 10.0.0.2 netmask 255.255.255.0 up 2>/dev/null && \
-			route add default gw 10.0.0.1 2>/dev/null && net_ready=1
+		/sbin/ifconfig wasm0 10.0.0.2 netmask 255.255.255.0 up 2>/dev/null && \
+			/sbin/route add default gw 10.0.0.1 2>/dev/null && net_ready=1
 		break
 	fi
 	sleep 1
@@ -23,6 +28,10 @@ while [ "$i" -lt 20 ]; do
 done
 
 mkdir -p /etc
+cat > /etc/hosts <<'EOF'
+127.0.0.1 localhost
+::1 localhost
+EOF
 echo "nameserver 10.0.0.1" > /etc/resolv.conf
 
 echo
