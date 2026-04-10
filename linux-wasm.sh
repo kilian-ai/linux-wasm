@@ -228,6 +228,43 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
                 echo "Patching quickjs.c to disable CONFIG_ATOMICS for WASM..."
                 sed -i 's|^#define CONFIG_ATOMICS$|/* WASM_PATCH: disable CONFIG_ATOMICS — pthreads unreliable in wasm32 Linux */\n/* #define CONFIG_ATOMICS */|' "$QJS_SRC/quickjs.c"
             fi
+            echo "Patching quickjs.c with abort line tracer for WASM diagnostics..."
+            python3 - "$QJS_SRC/quickjs.c" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+# Normalize any previous tracer insertions (older/manual variants included)
+s = re.sub(
+    r'#if defined\(__wasm__\)\n(?:/\* .*?\*/\n)?__attribute__\(\(noreturn\)\) static void qjs_wasm_abort_line\(int line\)\n\{\n(?:.*?)\n\}\n#define abort\(\) qjs_wasm_abort_line\(__LINE__\)\n#endif\n?',
+    '',
+    s,
+    flags=re.S,
+)
+
+needle = '#include "dtoa.h"\n'
+insert = (
+    '#include "dtoa.h"\n\n'
+    '#if defined(__wasm__)\n'
+    '/* WASM_PATCH: abort line tracer */\n'
+    '__attribute__((noreturn)) static void qjs_wasm_abort_line(int line)\n'
+    '{\n'
+    '    fprintf(stderr, "[quickjs] abort() at quickjs.c:%d\\n", line);\n'
+    '    fflush(stderr);\n'
+    '    __builtin_trap();\n'
+    '}\n'
+    '#define abort() qjs_wasm_abort_line(__LINE__)\n'
+    '#endif\n'
+)
+
+if needle in s:
+    s = s.replace(needle, insert, 1)
+
+p.write_text(s)
+PY
 
             # Step 1: Build host-native qjsc (the QuickJS compiler) to generate repl.c from repl.js
             echo "Building host-native qjsc to generate repl.c..."
