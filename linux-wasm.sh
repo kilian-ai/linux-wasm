@@ -212,6 +212,8 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             QJS_VERSION=$(cat "$QJS_SRC/VERSION" 2>/dev/null || echo wasm)
             WASM_FLAGS+=' -DCONFIG_VERSION="'"$QJS_VERSION"'"'
             WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
+            # WASM: __builtin_frame_address(0) returns garbage, disable stack overflow checks
+            WASM_FLAGS+=" -UCONFIG_STACK_CHECK"
 
             CFLAGS_OPT="$WASM_FLAGS -O2"
             LDFLAGS="$WASM_FLAGS --rtlib=compiler-rt -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
