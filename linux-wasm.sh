@@ -236,6 +236,11 @@ void *dlopen(const char *f, int flags) { (void)f; (void)flags; return NULL; }
 void *dlsym(void *h, const char *s) { (void)h; (void)s; return NULL; }
 int dlclose(void *h) { (void)h; return 0; }
 char *dlerror(void) { return "dlopen not supported on WASM"; }
+/* musl __REDIR macros redirect dlsym -> __dlsym_time64 etc. at the
+   preprocessor level, so the stubs above never satisfy those calls.
+   Provide the time64 variants directly. */
+void *__dlsym_time64(void *h, const char *s) { (void)h; (void)s; return NULL; }
+void *__dlopen_time64(const char *f, int flags) { (void)f; (void)flags; return NULL; }
 STUBS_EOF
             echo "  CC dl_stubs.c -> dl_stubs.o"
             $QJS_CC $CFLAGS_OPT -c -o dl_stubs.o dl_stubs.c
