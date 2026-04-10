@@ -212,11 +212,22 @@ case "$1" in # note use of ;;& meaning that each case is re-tested (can hit mult
             QJS_VERSION=$(cat "$QJS_SRC/VERSION" 2>/dev/null || echo wasm)
             WASM_FLAGS+=' -DCONFIG_VERSION="'"$QJS_VERSION"'"'
             WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
-            # WASM: __builtin_frame_address(0) returns garbage, disable stack overflow checks
-            WASM_FLAGS+=" -UCONFIG_STACK_CHECK"
-
-            CFLAGS_OPT="$WASM_FLAGS -O2"
+            CFLAGS_OPT="$WASM_FLAGS -O0 -DNDEBUG"
             LDFLAGS="$WASM_FLAGS --rtlib=compiler-rt -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
+
+            # Patch quickjs.c: disable CONFIG_STACK_CHECK for WASM.
+            # __builtin_frame_address(0) returns garbage in wasm32, so stack overflow
+            # checks corrupt runtime state → crashes. The #define is hardcoded inside
+            # quickjs.c (guarded by !EMSCRIPTEN, but we're not Emscripten), so compiler
+            # -U flags don't help. Patch the source directly.
+            if ! grep -q 'WASM_PATCH: disable CONFIG_STACK_CHECK' "$QJS_SRC/quickjs.c"; then
+                echo "Patching quickjs.c to disable CONFIG_STACK_CHECK for WASM..."
+                sed -i 's|^#define CONFIG_STACK_CHECK$|/* WASM_PATCH: disable CONFIG_STACK_CHECK — __builtin_frame_address broken in wasm32 */\n/* #define CONFIG_STACK_CHECK */|' "$QJS_SRC/quickjs.c"
+            fi
+            if ! grep -q 'WASM_PATCH: disable CONFIG_ATOMICS' "$QJS_SRC/quickjs.c"; then
+                echo "Patching quickjs.c to disable CONFIG_ATOMICS for WASM..."
+                sed -i 's|^#define CONFIG_ATOMICS$|/* WASM_PATCH: disable CONFIG_ATOMICS — pthreads unreliable in wasm32 Linux */\n/* #define CONFIG_ATOMICS */|' "$QJS_SRC/quickjs.c"
+            fi
 
             # Step 1: Build host-native qjsc (the QuickJS compiler) to generate repl.c from repl.js
             echo "Building host-native qjsc to generate repl.c..."
@@ -269,6 +280,178 @@ STUBS_EOF
             # Install the qjs binary
             cp qjs "$LW_INSTALL/quickjs/bin/qjs"
             echo "QuickJS installed to $LW_INSTALL/quickjs/bin/qjs"
+
+            # Build a minimal test binary for diagnostics
+            echo "Building hello-test (minimal C test program)..."
+            cat > hello_test.c << 'HELLO_EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+
+int main(int argc, char **argv) {
+    printf("hello from WASM C!\n");
+    printf("argc=%d\n", argc);
+
+    /* Test malloc */
+    void *p = malloc(1024);
+    if (p) {
+        printf("malloc(1024) = %p\n", p);
+        size_t us = malloc_usable_size(p);
+        printf("malloc_usable_size = %zu\n", us);
+        memset(p, 0x41, 1024);
+        free(p);
+        printf("malloc+free OK\n");
+    }
+
+    return 0;
+}
+HELLO_EOF
+            $QJS_CC $CFLAGS_OPT -c -o hello_test.o hello_test.c
+            $QJS_CC $LDFLAGS -o hello-test hello_test.o
+            cp hello-test "$LW_INSTALL/quickjs/bin/hello-test"
+
+            # Build a QuickJS step-by-step diagnostic
+            echo "Building qjs-diag (step-by-step QuickJS init test)..."
+            cat > qjs_diag.c << 'DIAG_EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include "quickjs.h"
+#include "quickjs-libc.h"
+
+/* Helper: load all intrinsics with printf between each, track brk */
+static int load_all_intrinsics(JSContext *ctx, const char *tag) {
+    struct { const char *name; int (*fn)(JSContext*); } steps[] = {
+        {"BaseObjects",      JS_AddIntrinsicBaseObjects},
+        {"Date",             JS_AddIntrinsicDate},
+        {"Eval",             JS_AddIntrinsicEval},
+        {"StringNormalize",  JS_AddIntrinsicStringNormalize},
+        {"RegExp",           JS_AddIntrinsicRegExp},
+        {"JSON",             JS_AddIntrinsicJSON},
+        {"Proxy",            JS_AddIntrinsicProxy},
+        {"MapSet",           JS_AddIntrinsicMapSet},
+        {"TypedArrays",      JS_AddIntrinsicTypedArrays},
+        {"Promise",          JS_AddIntrinsicPromise},
+        {"WeakRef",          JS_AddIntrinsicWeakRef},
+    };
+    int n = sizeof(steps)/sizeof(steps[0]);
+    for (int i = 0; i < n; i++) {
+        printf("[%s] %d/%d: %s (brk=%p)...\n", tag, i+1, n, steps[i].name, sbrk(0));
+        fflush(stdout);
+        int r = steps[i].fn(ctx);
+        if (r) {
+            printf("[%s] FAILED at %s\n", tag, steps[i].name); fflush(stdout);
+            return -1;
+        }
+        printf("[%s] %d/%d: %s OK\n", tag, i+1, n, steps[i].name); fflush(stdout);
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    printf("[diag] QuickJS WASM diagnostic v4\n"); fflush(stdout);
+    printf("[diag] initial brk = %p\n", sbrk(0)); fflush(stdout);
+
+    /* --- Test 1: Memory ceiling discovery --- */
+    printf("\n=== TEST 1: Memory ceiling (pure malloc, no QuickJS) ===\n"); fflush(stdout);
+    {
+        size_t total = 0;
+        for (int i = 0; i < 200; i++) {
+            size_t sz = 65536; /* 64KB chunks */
+            void *p = malloc(sz);
+            if (!p) {
+                printf("[1] malloc failed at chunk %d (total %zu KB)\n", i, total/1024);
+                fflush(stdout);
+                break;
+            }
+            memset(p, 0xBB, sz);
+            total += sz;
+            if (i % 20 == 0) {
+                printf("[1] chunk %d: total=%zuKB brk=%p\n", i, total/1024, sbrk(0));
+                fflush(stdout);
+            }
+            free(p);
+        }
+        printf("[1] malloc ceiling test done, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        /* Also test mmap */
+        printf("[1] mmap(64KB anonymous)...\n"); fflush(stdout);
+        void *m = mmap(NULL, 65536, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        printf("[1] mmap result = %p (MAP_FAILED=%p)\n", m, MAP_FAILED); fflush(stdout);
+        if (m != MAP_FAILED) munmap(m, 65536);
+    }
+
+    /* --- Test 2: Single runtime, all intrinsics, with brk tracking --- */
+    printf("\n=== TEST 2: Single fresh runtime — all intrinsics ===\n"); fflush(stdout);
+    {
+        JSRuntime *rt = JS_NewRuntime();
+        if (!rt) { printf("[2] FAILED: no runtime\n"); fflush(stdout); goto test3; }
+        printf("[2] runtime OK, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        JSContext *ctx = JS_NewContextRaw(rt);
+        if (!ctx) { printf("[2] FAILED: no ctx\n"); fflush(stdout); goto test3; }
+        printf("[2] context OK, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        if (load_all_intrinsics(ctx, "2") < 0) goto test3;
+
+        printf("[2] Eval '1+1'...\n"); fflush(stdout);
+        JSValue val = JS_Eval(ctx, "1+1", 3, "<test>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(val)) {
+            printf("[2] EXCEPTION from eval\n"); fflush(stdout);
+        } else {
+            int32_t r; JS_ToInt32(ctx, &r, val);
+            printf("[2] result = %d\n", r); fflush(stdout);
+        }
+        JS_FreeValue(ctx, val);
+
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        printf("[2] DONE, brk=%p\n", sbrk(0)); fflush(stdout);
+    }
+
+    /* --- Test 3: JS_NewContext (combines all intrinsics in one call) --- */
+test3:
+    printf("\n=== TEST 3: JS_NewContext (all-in-one) ===\n"); fflush(stdout);
+    {
+        printf("[3] brk before = %p\n", sbrk(0)); fflush(stdout);
+        JSRuntime *rt = JS_NewRuntime();
+        if (!rt) { printf("[3] FAILED: no runtime\n"); fflush(stdout); goto done; }
+        printf("[3] runtime OK\n"); fflush(stdout);
+
+        printf("[3] JS_NewContext (loads ALL intrinsics)...\n"); fflush(stdout);
+        JSContext *ctx = JS_NewContext(rt);
+        if (!ctx) { printf("[3] FAILED: no ctx\n"); fflush(stdout); goto done; }
+        printf("[3] context OK! brk=%p\n", sbrk(0)); fflush(stdout);
+
+        printf("[3] Eval '2+3'...\n"); fflush(stdout);
+        JSValue val = JS_Eval(ctx, "2+3", 3, "<test>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(val)) {
+            printf("[3] EXCEPTION\n"); fflush(stdout);
+        } else {
+            int32_t r; JS_ToInt32(ctx, &r, val);
+            printf("[3] result = %d\n", r); fflush(stdout);
+        }
+        JS_FreeValue(ctx, val);
+
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        printf("[3] DONE, brk=%p\n", sbrk(0)); fflush(stdout);
+    }
+
+done:
+    printf("\n[diag] ALL TESTS COMPLETE\n"); fflush(stdout);
+    return 0;
+}
+DIAG_EOF
+            $QJS_CC $CFLAGS_OPT -I"$QJS_SRC" -c -o qjs_diag.o qjs_diag.c
+            $QJS_CC $LDFLAGS -o qjs-diag \
+                qjs_diag.o quickjs.o dtoa.o libregexp.o libunicode.o \
+                cutils.o quickjs-libc.o dl_stubs.o -lm
+            cp qjs-diag "$LW_INSTALL/quickjs/bin/qjs-diag"
+            echo "qjs-diag installed to $LW_INSTALL/quickjs/bin/qjs-diag"
         )
     handled=1;;&
 
