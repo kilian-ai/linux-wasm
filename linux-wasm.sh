@@ -1,0 +1,634 @@
+#!/bin/bash
+
+# This is a very simple file that can be divided into two phases for each inherent software: fetching and building.
+# Fetching happens first, then building. You can "fetch" all, "build" all, or do "all" which does both. You may also
+# specify a specific piece of software and fetch or build just that, but keep in mind dependencies between them.
+#
+# Fetching means: download and patch.
+# Building means: configure, compile and install (to separate folder).
+# By default everything ends up in a folder named workspace/ but you can change that by specifying LW_WORKSPACE=...
+# This script can be run in any directory, it should not pollute the current working directory, but just in case you
+# may want to create an empty scratch directory. It's hard to validate that all components' build systems behave...
+
+set -e
+
+LW_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# (All paths below are resolved as absolute. This is required for the other parts of the script to work properly.)
+
+# Path to workspace (will set LW_SRC, LW_BUILD, LW_INSTALL ... paths).
+: "${LW_WORKSPACE:=$LW_ROOT/workspace}"
+LW_WORKSPACE="$(cd "$LW_WORKSPACE" 2>/dev/null && pwd || echo "$LW_WORKSPACE")"
+
+# Path to where sources will be downloaded and patched.
+: "${LW_SRC:=$LW_WORKSPACE/src}"
+LW_SRC="$(cd "$LW_SRC" 2>/dev/null && pwd || echo "$LW_SRC")"
+
+# Path to where each software component will be built.
+: "${LW_BUILD:=$LW_WORKSPACE/build}"
+LW_BUILD="$(cd "$LW_BUILD" 2>/dev/null && pwd || echo "$LW_BUILD")"
+
+# Path to where each software component will be installed.
+: "${LW_INSTALL:=$LW_WORKSPACE/install}"
+LW_INSTALL="$(cd "$LW_INSTALL" 2>/dev/null && pwd || echo "$LW_INSTALL")"
+
+# Flags used with git. --depth 1 is recommended to avoid downloading a lot of history.
+: "${LW_GITFLAGS:=--depth 1}"
+
+# Parallel build jobs. Unfortunately not as simple as one number in reality. These are rather conservative.
+: "${LW_JOBS_LLVM_LINK:=1}"
+: "${LW_JOBS_LLVM_COMPILE:=3}"
+: "${LW_JOBS_KERNEL_COMPILE:=8}"
+: "${LW_JOBS_MUSL_COMPILE:=8}"
+: "${LW_JOBS_BUSYBOX_COMPILE:=8}"
+
+handled=0
+case "$1" in # note use of ;;& meaning that each case is re-tested (can hit multiple times)!
+    "fetch-llvm"|"all-llvm"|"fetch"|"all")
+        mkdir -p "$LW_SRC/llvm"
+        git clone -b llvmorg-18.1.2 $LW_GITFLAGS https://github.com/llvm/llvm-project.git "$LW_SRC/llvm"
+        git -C "$LW_SRC/llvm" am < "$LW_ROOT/patches/llvm/0001-Hack-patch-to-allow-GNU-ld-style-linker-scripts-in-w.patch"
+    handled=1;;&
+
+    "fetch-kernel"|"all-kernel"|"fetch"|"all")
+        mkdir -p "$LW_SRC/kernel"
+        git clone -b v6.4.16 $LW_GITFLAGS https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git "$LW_SRC/kernel"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0001-Always-access-the-instruction-pointer-intrinsic-via-.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0002-Allow-architecture-specific-panic-handling.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0003-Add-missing-processor.h-include-for-asm-generic-barr.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0004-Align-dot-instead-of-section-in-vmlinux.lds.h.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0005-Add-Wasm-architecture.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0006-Add-Wasm-binfmt.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0007-Use-.section-format-compatible-with-LLVM-as-when-tar.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0008-Provide-Wasm-support-in-mk_elfconfig.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0009-Add-dummy-ELF-constants-for-Wasm.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0010-Add-Wasm-console-support.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0011-Add-wasm_defconfig.patch"
+        git -C "$LW_SRC/kernel" am < "$LW_ROOT/patches/kernel/0012-HACK-Workaround-broken-wq_worker_comm.patch"
+    handled=1;;&
+
+    "fetch-musl"|"all-musl"|"fetch"|"all")
+        mkdir -p "$LW_SRC/musl"
+        git clone -b v1.2.5 $LW_GITFLAGS https://git.musl-libc.org/git/musl "$LW_SRC/musl"
+        git -C "$LW_SRC/musl" am < "$LW_ROOT/patches/musl/0001-NOMERGE-Hacks-to-get-Linux-Wasm-to-compile-minimal-a.patch"
+    handled=1;;&
+
+    "fetch-busybox-kernel-headers"|"all-busybox-kernel-headers"|"fetch"|"all")
+        # There is not really much to do here, the kernel needs to be built first. See build-busybox-kernel-headers.
+    handled=1;;&
+
+    "fetch-busybox"|"all-busybox"|"fetch"|"all")
+        mkdir -p "$LW_SRC/busybox"
+        git clone -b 1_36_1 $LW_GITFLAGS https://git.busybox.net/busybox "$LW_SRC/busybox"
+        git -C "$LW_SRC/busybox" am < "$LW_ROOT/patches/busybox/0001-NOMERGE-Hacks-to-build-Wasm-Linux-arch-minimal-and-i.patch"
+    handled=1;;&
+
+    "fetch-quickjs"|"all-quickjs"|"fetch"|"all")
+        mkdir -p "$LW_SRC/quickjs"
+        git clone --depth 1 https://github.com/bellard/quickjs.git "$LW_SRC/quickjs"
+    handled=1;;&
+
+    "fetch-initramfs"|"all-initramfs"|"fetch"|"all")
+        # Nothing to do here.
+        # We already have patches/initramfs/initramfs-base.cpio pre-built by toos/make-initramfs-base.sh in the repo.
+    handled=1;;&
+
+    "build-llvm"|"all-llvm"|"build"|"all"|"build-tools")
+        mkdir -p "$LW_BUILD/llvm"
+        # (LLVM_DEFAULT_TARGET_TRIPLE is needed to build compiler-rt, which is needed by musl.)
+        # The extra indented lines are to build compiler-rt for Wasm, you may remove all of them to skip it.
+        cmake -G Ninja \
+            "-DCMAKE_INSTALL_PREFIX=$LW_INSTALL/llvm" \
+            "-B$LW_BUILD/llvm" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="WebAssembly" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+                -DLLVM_ENABLE_RUNTIMES="compiler-rt" \
+                -DCOMPILER_RT_BAREMETAL_BUILD=Yes \
+                -DCOMPILER_RT_BUILD_XRAY=No \
+                -DCOMPILER_RT_INCLUDE_TESTS=No \
+                -DCOMPILER_RT_HAS_FPIC_FLAG=No \
+                -DCOMPILER_RT_ENABLE_IOS=No \
+                -DCOMPILER_RT_BUILD_CRT=No \
+                -DCOMPILER_RT_BUILD_BUILTINS=No \
+                -DCOMPILER_RT_DEFAULT_TARGET_ONLY=Yes \
+                -DLLVM_DEFAULT_TARGET_TRIPLE="wasm32-unknown-unknown" \
+            -DLLVM_ENABLE_ASSERTIONS=1 \
+            -DLLVM_PARALLEL_LINK_JOBS=$LW_JOBS_LLVM_LINK \
+            -DLLVM_PARALLEL_COMPILE_JOBS=$LW_JOBS_LLVM_COMPILE \
+            "$LW_SRC/llvm/llvm"
+
+        cmake --build "$LW_BUILD/llvm"
+        cmake --install "$LW_BUILD/llvm"
+    handled=1;;&
+
+    "build-kernel"|"all-kernel"|"build"|"all"|"build-os")
+        mkdir -p "$LW_BUILD/kernel"
+        # Note: LLVM=/blah/ MUST start AND END with a trailing slash, or it will be interpreted as LLVM=1 (which looks for system clang etc.)!
+        # Unfortunately this means the value cannot be escaped in 'single quotes', which means the path cannot contain spaces...
+        # Note: kernel docs often show setting CC=clang but don't do this (or you will get system clang due to the above).
+        LW_KERNEL_MAKE="make"
+        LW_KERNEL_MAKE+=" O='$LW_BUILD/kernel'"
+        LW_KERNEL_MAKE+=" ARCH=wasm"
+        LW_KERNEL_MAKE+=" LLVM=$LW_INSTALL/llvm/bin/"
+        LW_KERNEL_MAKE+=" CROSS_COMPILE=wasm32-unknown-unknown-"
+        LW_KERNEL_MAKE+=" HOSTCC=gcc"
+        (
+            cd "$LW_SRC/kernel"
+            #$LW_KERNEL_MAKE menuconfig
+            #exit 1
+
+            $LW_KERNEL_MAKE defconfig
+            $LW_KERNEL_MAKE -j $LW_JOBS_KERNEL_COMPILE V=1
+            $LW_KERNEL_MAKE headers_install
+        )
+        mkdir -p "$LW_INSTALL/kernel/include"
+        cp -R "$LW_BUILD/kernel/usr/include/." "$LW_INSTALL/kernel/include"
+        cp "$LW_BUILD/kernel/vmlinux" "$LW_INSTALL/kernel/vmlinux.wasm"
+    handled=1;;&
+
+    "build-musl"|"all-musl"|"build"|"all"|"build-os")
+        mkdir -p "$LW_BUILD/musl"
+        (
+            cd "$LW_BUILD/musl"
+
+            # LIBCC is set mostly to something non-empty, which is needed for the build to succeed.
+            # Note how we build --disable-shared (i.e. disable dynamic linking by musl) but with -fPIC and -shared.
+            CROSS_COMPILE="$LW_INSTALL/llvm/bin/llvm-" \
+    	    CC="$LW_INSTALL/llvm/bin/clang" \
+    	    CFLAGS="--target=wasm32-unknown-unknown -Xclang -target-feature -Xclang +atomics -Xclang -target-feature -Xclang +bulk-memory -fPIC -Wl,-shared" \
+	        LIBCC="--rtlib=compiler-rt" \
+	        "$LW_SRC/musl/configure" --target=wasm --prefix=/ --disable-shared "--srcdir=$LW_SRC/musl"
+            make -j $LW_JOBS_MUSL_COMPILE 
+
+            # NOTE: do not forget destdir or you may ruin the host system!!!
+            # We set --prefix to / as include/lib dirs are auto picked up by LLVM then (using --sysroot).
+            mkdir -p "$LW_INSTALL/musl"
+            DESTDIR="$LW_INSTALL/musl" make install
+        )
+    handled=1;;&
+
+    "build-busybox-kernel-headers"|"all-busybox-kernel-headers"|"build"|"all"|"build-os")
+        rm -rf "$LW_INSTALL/busybox-kernel-headers"
+        mkdir -p "$LW_INSTALL/busybox-kernel-headers"
+        cp -R "$LW_INSTALL/kernel/include/." "$LW_INSTALL/busybox-kernel-headers"
+        (
+            cd "$LW_INSTALL/busybox-kernel-headers"
+            patch -p1 < "$LW_ROOT/patches/busybox-kernel-headers/busybox-kernel-headers-for-musl.patch"
+        )
+    handled=1;;&
+
+    "build-busybox"|"all-busybox"|"build"|"all"|"build-os")
+        mkdir -p "$LW_BUILD/busybox"
+        mkdir -p "$LW_INSTALL/busybox"
+        cd "$LW_SRC/busybox"
+        for CMD in "wasm_defconfig" "-j $LW_JOBS_BUSYBOX_COMPILE" "install"
+        do # make wasm_defconfig, make, make install (CONFIG_PREFIX is set below for install path).
+            # The path escaping is a bit tricky but this seems to work... somehow...
+            make "O=$LW_BUILD/busybox" ARCH=wasm "CONFIG_PREFIX=$LW_INSTALL/busybox" \
+                "CROSS_COMPILE=$LW_INSTALL/llvm/bin/" "CONFIG_SYSROOT=$LW_INSTALL/musl" \
+                CONFIG_EXTRA_CFLAGS="$CFLAGS -isystem '$LW_INSTALL/busybox-kernel-headers' -D__linux__ -fPIC" \
+                $CMD
+        done
+    handled=1;;&
+
+    "build-quickjs"|"all-quickjs"|"build"|"all"|"build-os")
+        mkdir -p "$LW_BUILD/quickjs"
+        mkdir -p "$LW_INSTALL/quickjs/bin"
+        (
+            cd "$LW_BUILD/quickjs"
+
+            # Cross-compile QuickJS for wasm32 using the Linux/Wasm toolchain.
+            # We compile manually rather than using QuickJS's Makefile because
+            # cross-compilation to wasm32-unknown-unknown isn't a standard target.
+            QJS_CC="$LW_INSTALL/llvm/bin/clang"
+            QJS_AR="$LW_INSTALL/llvm/bin/llvm-ar"
+            QJS_SRC="$LW_SRC/quickjs"
+            WASM_FLAGS="--target=wasm32-unknown-unknown --sysroot=$LW_INSTALL/musl"
+            WASM_FLAGS+=" -Xclang -target-feature -Xclang +atomics"
+            WASM_FLAGS+=" -Xclang -target-feature -Xclang +bulk-memory"
+            WASM_FLAGS+=" -fPIC -D__linux__ -D_GNU_SOURCE"
+            WASM_FLAGS+=" -isystem $LW_INSTALL/busybox-kernel-headers"
+            QJS_VERSION=$(cat "$QJS_SRC/VERSION" 2>/dev/null || echo wasm)
+            WASM_FLAGS+=' -DCONFIG_VERSION="'"$QJS_VERSION"'"'
+            WASM_FLAGS+=" -Wno-incompatible-library-redeclaration"
+            CFLAGS_OPT="$WASM_FLAGS -O2 -DNDEBUG"
+            LDFLAGS="$WASM_FLAGS --rtlib=compiler-rt -Wl,--export-all -Wl,--import-table -Wl,--import-memory -Wl,--shared-memory -Wl,--max-memory=4294967296 -Wl,--no-merge-data-segments -Wl,-no-gc-sections -Wl,--import-undefined -Wl,-shared"
+
+            # Patch quickjs.c: disable CONFIG_STACK_CHECK for WASM.
+            # __builtin_frame_address(0) returns garbage in wasm32, so stack overflow
+            # checks corrupt runtime state → crashes. The #define is hardcoded inside
+            # quickjs.c (guarded by !EMSCRIPTEN, but we're not Emscripten), so compiler
+            # -U flags don't help. Patch the source directly.
+            if ! grep -q 'WASM_PATCH: disable CONFIG_STACK_CHECK' "$QJS_SRC/quickjs.c"; then
+                echo "Patching quickjs.c to disable CONFIG_STACK_CHECK for WASM..."
+                sed -i 's|^#define CONFIG_STACK_CHECK$|/* WASM_PATCH: disable CONFIG_STACK_CHECK — __builtin_frame_address broken in wasm32 */\n/* #define CONFIG_STACK_CHECK */|' "$QJS_SRC/quickjs.c"
+            fi
+            if ! grep -q 'WASM_PATCH: disable CONFIG_ATOMICS' "$QJS_SRC/quickjs.c"; then
+                echo "Patching quickjs.c to disable CONFIG_ATOMICS for WASM..."
+                sed -i 's|^#define CONFIG_ATOMICS$|/* WASM_PATCH: disable CONFIG_ATOMICS — pthreads unreliable in wasm32 Linux */\n/* #define CONFIG_ATOMICS */|' "$QJS_SRC/quickjs.c"
+            fi
+            echo "Patching quickjs.c with abort line tracer for WASM diagnostics..."
+            python3 - "$QJS_SRC/quickjs.c" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+p = Path(sys.argv[1])
+s = p.read_text()
+
+# Normalize any previous tracer insertions (older/manual variants included)
+s = re.sub(
+    r'#if defined\(__wasm__\)\n(?:/\* .*?\*/\n)?__attribute__\(\(noreturn\)\) static void qjs_wasm_abort_line\(int line\)\n\{\n(?:.*?)\n\}\n#define abort\(\) qjs_wasm_abort_line\(__LINE__\)\n#endif\n?',
+    '',
+    s,
+    flags=re.S,
+)
+
+needle = '#include "dtoa.h"\n'
+insert = (
+    '#include "dtoa.h"\n\n'
+    '#if defined(__wasm__)\n'
+    '/* WASM_PATCH: abort line tracer */\n'
+    '__attribute__((noreturn)) static void qjs_wasm_abort_line(int line)\n'
+    '{\n'
+    '    fprintf(stdout, "[quickjs] abort() at quickjs.c:%d\\n", line);\n'
+    '    fflush(stdout);\n'
+    '    __builtin_trap();\n'
+    '}\n'
+    '#define abort() qjs_wasm_abort_line(__LINE__)\n'
+    '#endif\n'
+)
+
+if needle in s:
+    s = s.replace(needle, insert, 1)
+
+p.write_text(s)
+PY
+
+            # Step 1: Build host-native qjsc (the QuickJS compiler) to generate repl.c from repl.js
+            echo "Building host-native qjsc to generate repl.c..."
+            HOST_CFLAGS="-O2 -DCONFIG_VERSION=\"$QJS_VERSION\" -D_GNU_SOURCE"
+            for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c qjsc.c; do
+                gcc $HOST_CFLAGS -c -o "host_$(basename $src .c).o" "$QJS_SRC/$src"
+            done
+            gcc -o host_qjsc host_qjsc.o host_quickjs.o host_dtoa.o host_libregexp.o \
+                host_libunicode.o host_cutils.o host_quickjs-libc.o -lm -lpthread -ldl
+            echo "  Generating repl.c from repl.js..."
+            ./host_qjsc -c -o repl.c -m "$QJS_SRC/repl.js"
+
+            # Step 2: Create dl stubs (dlopen/dlsym/dlclose)
+            # The WASM kernel doesn't provide __dlsym_time64 etc., so we provide
+            # no-op stubs that return NULL/error. This prevents LinkError at runtime.
+            cat > dl_stubs.c << 'STUBS_EOF'
+#include <stddef.h>
+void *dlopen(const char *f, int flags) { (void)f; (void)flags; return NULL; }
+void *dlsym(void *h, const char *s) { (void)h; (void)s; return NULL; }
+int dlclose(void *h) { (void)h; return 0; }
+char *dlerror(void) { return "dlopen not supported on WASM"; }
+/* musl __REDIR macros redirect dlsym -> __dlsym_time64 etc. at the
+   preprocessor level, so the stubs above never satisfy those calls.
+   Provide the time64 variants directly. */
+void *__dlsym_time64(void *h, const char *s) { (void)h; (void)s; return NULL; }
+void *__dlopen_time64(const char *f, int flags) { (void)f; (void)flags; return NULL; }
+STUBS_EOF
+            echo "  CC dl_stubs.c -> dl_stubs.o"
+            $QJS_CC $CFLAGS_OPT -c -o dl_stubs.o dl_stubs.c
+
+            # Step 3: Cross-compile all QuickJS sources for wasm32
+            echo "Compiling QuickJS objects for wasm32..."
+            for src in quickjs.c dtoa.c libregexp.c libunicode.c cutils.c quickjs-libc.c; do
+                obj="$(basename $src .c).o"
+                echo "  CC $src -> $obj"
+                $QJS_CC $CFLAGS_OPT -c -o "$obj" "$QJS_SRC/$src"
+            done
+
+            # repl.c (generated) and qjs.c
+            echo "  CC repl.c -> repl.o"
+            $QJS_CC $CFLAGS_OPT -c -o repl.o repl.c
+            echo "  CC qjs.c -> qjs.o"
+            $QJS_CC $CFLAGS_OPT -c -o qjs.o "$QJS_SRC/qjs.c"
+
+            echo "Linking qjs..."
+            $QJS_CC $LDFLAGS -o qjs \
+                qjs.o repl.o quickjs.o dtoa.o libregexp.o libunicode.o \
+                cutils.o quickjs-libc.o dl_stubs.o -lm
+
+            # Install the qjs binary
+            cp qjs "$LW_INSTALL/quickjs/bin/qjs"
+            echo "QuickJS installed to $LW_INSTALL/quickjs/bin/qjs"
+
+            # Build a minimal test binary for diagnostics
+            echo "Building hello-test (minimal C test program)..."
+            cat > hello_test.c << 'HELLO_EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <malloc.h>
+
+int main(int argc, char **argv) {
+    printf("hello from WASM C!\n");
+    printf("argc=%d\n", argc);
+
+    /* Test malloc */
+    void *p = malloc(1024);
+    if (p) {
+        printf("malloc(1024) = %p\n", p);
+        size_t us = malloc_usable_size(p);
+        printf("malloc_usable_size = %zu\n", us);
+        memset(p, 0x41, 1024);
+        free(p);
+        printf("malloc+free OK\n");
+    }
+
+    return 0;
+}
+HELLO_EOF
+            $QJS_CC $CFLAGS_OPT -c -o hello_test.o hello_test.c
+            $QJS_CC $LDFLAGS -o hello-test hello_test.o
+            cp hello-test "$LW_INSTALL/quickjs/bin/hello-test"
+
+            # Build a QuickJS step-by-step diagnostic
+            echo "Building qjs-diag (step-by-step QuickJS init test)..."
+            cat > qjs_diag.c << 'DIAG_EOF'
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include "quickjs.h"
+#include "quickjs-libc.h"
+
+/* Helper: load all intrinsics with printf between each, track brk */
+static int load_all_intrinsics(JSContext *ctx, const char *tag) {
+    struct { const char *name; int (*fn)(JSContext*); } steps[] = {
+        {"BaseObjects",      JS_AddIntrinsicBaseObjects},
+        {"Date",             JS_AddIntrinsicDate},
+        {"Eval",             JS_AddIntrinsicEval},
+        {"StringNormalize",  JS_AddIntrinsicStringNormalize},
+        {"RegExp",           JS_AddIntrinsicRegExp},
+        {"JSON",             JS_AddIntrinsicJSON},
+        {"Proxy",            JS_AddIntrinsicProxy},
+        {"MapSet",           JS_AddIntrinsicMapSet},
+        {"TypedArrays",      JS_AddIntrinsicTypedArrays},
+        {"Promise",          JS_AddIntrinsicPromise},
+        {"WeakRef",          JS_AddIntrinsicWeakRef},
+    };
+    int n = sizeof(steps)/sizeof(steps[0]);
+    for (int i = 0; i < n; i++) {
+        printf("[%s] %d/%d: %s (brk=%p)...\n", tag, i+1, n, steps[i].name, sbrk(0));
+        fflush(stdout);
+        int r = steps[i].fn(ctx);
+        if (r) {
+            printf("[%s] FAILED at %s\n", tag, steps[i].name); fflush(stdout);
+            return -1;
+        }
+        printf("[%s] %d/%d: %s OK\n", tag, i+1, n, steps[i].name); fflush(stdout);
+    }
+    return 0;
+}
+
+int main(int argc, char **argv) {
+    printf("[diag] QuickJS WASM diagnostic v6\n"); fflush(stdout);
+    printf("[diag] initial brk = %p\n", sbrk(0)); fflush(stdout);
+
+    /* --- Test 1: Memory ceiling discovery --- */
+    printf("\n=== TEST 1: Memory ceiling (pure malloc, no QuickJS) ===\n"); fflush(stdout);
+    {
+        size_t total = 0;
+        for (int i = 0; i < 200; i++) {
+            size_t sz = 65536; /* 64KB chunks */
+            void *p = malloc(sz);
+            if (!p) {
+                printf("[1] malloc failed at chunk %d (total %zu KB)\n", i, total/1024);
+                fflush(stdout);
+                break;
+            }
+            memset(p, 0xBB, sz);
+            total += sz;
+            if (i % 20 == 0) {
+                printf("[1] chunk %d: total=%zuKB brk=%p\n", i, total/1024, sbrk(0));
+                fflush(stdout);
+            }
+            free(p);
+        }
+        printf("[1] malloc ceiling test done, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        /* Also test mmap */
+        printf("[1] mmap(64KB anonymous)...\n"); fflush(stdout);
+        void *m = mmap(NULL, 65536, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+        printf("[1] mmap result = %p (MAP_FAILED=%p)\n", m, MAP_FAILED); fflush(stdout);
+        if (m != MAP_FAILED) munmap(m, 65536);
+    }
+
+    /* --- Test 2: Single runtime, all intrinsics, with brk tracking --- */
+    printf("\n=== TEST 2: Single fresh runtime — all intrinsics ===\n"); fflush(stdout);
+    {
+        JSRuntime *rt = JS_NewRuntime();
+        if (!rt) { printf("[2] FAILED: no runtime\n"); fflush(stdout); goto test3; }
+        printf("[2] runtime OK, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        JSContext *ctx = JS_NewContextRaw(rt);
+        if (!ctx) { printf("[2] FAILED: no ctx\n"); fflush(stdout); goto test3; }
+        printf("[2] context OK, brk=%p\n", sbrk(0)); fflush(stdout);
+
+        if (load_all_intrinsics(ctx, "2") < 0) goto test3;
+
+        printf("[2] Pre-eval diagnostics...\n"); fflush(stdout);
+        printf("[2]   - ctx=%p\n", (void*)ctx); fflush(stdout);
+        printf("[2]   - sbrk(0)=%p\n", sbrk(0)); fflush(stdout);
+        printf("[2] Checking Object builtin via global access...\n"); fflush(stdout);
+        JSValue global = JS_GetGlobalObject(ctx);
+        if (JS_IsException(global)) {
+            printf("[2]   ERROR: GetGlobalObject failed\n"); fflush(stdout);
+        } else {
+            printf("[2]   OK: global object accessible\n"); fflush(stdout);
+            JSValue obj_ctor = JS_GetPropertyStr(ctx, global, "Object");
+            if (JS_IsException(obj_ctor)) {
+                printf("[2]   ERROR: Object not found in global\n"); fflush(stdout);
+            } else {
+                printf("[2]   OK: Object found (tag=%d)\n", JS_VALUE_GET_TAG(obj_ctor)); fflush(stdout);
+                JS_FreeValue(ctx, obj_ctor);
+            }
+            JS_FreeValue(ctx, global);
+        }
+        
+        /* Step A: compile-only — does parse+bytecode compile without executing */
+        printf("[2] Step A: JS_Eval COMPILE_ONLY test...\n"); fflush(stdout);
+        printf("[2]   flag = JS_EVAL_TYPE_GLOBAL|JS_EVAL_FLAG_COMPILE_ONLY = %d\n",
+               JS_EVAL_TYPE_GLOBAL | (1 << 5)); fflush(stdout);
+        JSValue fn = JS_Eval(ctx, "1+1", 3, "<test>",
+                             JS_EVAL_TYPE_GLOBAL | (1 << 5));
+        printf("[2] Step A returned, tag=%d, is_exception=%d\n",
+               JS_VALUE_GET_TAG(fn), JS_IsException(fn)); fflush(stdout);
+        if (JS_IsException(fn)) {
+            JSValue exc = JS_GetException(ctx);
+            const char *msg = JS_ToCString(ctx, exc);
+            printf("[2] Compile-only EXCEPTION: %s\n", msg ? msg : "(null)"); fflush(stdout);
+            if (msg) JS_FreeCString(ctx, msg);
+            JS_FreeValue(ctx, exc);
+        } else {
+            printf("[2] Compile-only OK (bytecode object tag=%d)\n",
+                   JS_VALUE_GET_TAG(fn)); fflush(stdout);
+
+            /* Step B: basic int32 roundtrip (no bytecode execution) */
+            printf("[2] Step B: int32 roundtrip...\n"); fflush(stdout);
+            {
+                JSValue num = JS_NewInt32(ctx, 42);
+                int32_t v = 0;
+                JS_ToInt32(ctx, &v, num);
+                printf("[2] Step B result = %d (expected 42)\n", v); fflush(stdout);
+                JS_FreeValue(ctx, num);
+            }
+
+            /* Step C: one-shot compile+execute (no COMPILE_ONLY) */
+            printf("[2] Step C: JS_Eval '2+3' (one-shot)...\n"); fflush(stdout);
+            {
+                JSValue v = JS_Eval(ctx, "2+3", 3, "<test-c>", JS_EVAL_TYPE_GLOBAL);
+                printf("[2] Step C returned, tag=%d, exc=%d\n",
+                       JS_VALUE_GET_TAG(v), JS_IsException(v)); fflush(stdout);
+                if (!JS_IsException(v)) {
+                    int32_t r = 0;
+                    JS_ToInt32(ctx, &r, v);
+                    printf("[2] Step C result = %d (expected 5)\n", r); fflush(stdout);
+                }
+                JS_FreeValue(ctx, v);
+            }
+
+            /* Step D: execute pre-compiled bytecode via JS_EvalFunction */
+            printf("[2] Step D: JS_EvalFunction...\n"); fflush(stdout);
+            JSValue val = JS_EvalFunction(ctx, fn); /* consumes fn */
+            printf("[2] Step D returned, tag=%d\n", JS_VALUE_GET_TAG(val)); fflush(stdout);
+            if (JS_IsException(val)) {
+                printf("[2] Execution EXCEPTION\n"); fflush(stdout);
+            } else {
+                int32_t r = 0;
+                JS_ToInt32(ctx, &r, val);
+                printf("[2] result = %d (expected 2)\n", r); fflush(stdout);
+            }
+            JS_FreeValue(ctx, val);
+        }
+
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        printf("[2] DONE, brk=%p\n", sbrk(0)); fflush(stdout);
+    }
+
+    /* --- Test 3: JS_NewContext (combines all intrinsics in one call) --- */
+test3:
+    printf("\n=== TEST 3: JS_NewContext (all-in-one) ===\n"); fflush(stdout);
+    {
+        printf("[3] brk before = %p\n", sbrk(0)); fflush(stdout);
+        JSRuntime *rt = JS_NewRuntime();
+        if (!rt) { printf("[3] FAILED: no runtime\n"); fflush(stdout); goto done; }
+        printf("[3] runtime OK\n"); fflush(stdout);
+
+        printf("[3] JS_NewContext (loads ALL intrinsics)...\n"); fflush(stdout);
+        JSContext *ctx = JS_NewContext(rt);
+        if (!ctx) { printf("[3] FAILED: no ctx\n"); fflush(stdout); goto done; }
+        printf("[3] context OK! brk=%p\n", sbrk(0)); fflush(stdout);
+
+        printf("[3] Eval '2+3'...\n"); fflush(stdout);
+        JSValue val = JS_Eval(ctx, "2+3", 3, "<test>", JS_EVAL_TYPE_GLOBAL);
+        if (JS_IsException(val)) {
+            printf("[3] EXCEPTION\n"); fflush(stdout);
+        } else {
+            int32_t r; JS_ToInt32(ctx, &r, val);
+            printf("[3] result = %d\n", r); fflush(stdout);
+        }
+        JS_FreeValue(ctx, val);
+
+        JS_FreeContext(ctx);
+        JS_FreeRuntime(rt);
+        printf("[3] DONE, brk=%p\n", sbrk(0)); fflush(stdout);
+    }
+
+done:
+    printf("\n[diag] ALL TESTS COMPLETE\n"); fflush(stdout);
+    return 0;
+}
+DIAG_EOF
+            $QJS_CC $CFLAGS_OPT -I"$QJS_SRC" -c -o qjs_diag.o qjs_diag.c
+            $QJS_CC $LDFLAGS -o qjs-diag \
+                qjs_diag.o quickjs.o dtoa.o libregexp.o libunicode.o \
+                cutils.o quickjs-libc.o dl_stubs.o -lm
+            cp qjs-diag "$LW_INSTALL/quickjs/bin/qjs-diag"
+            echo "qjs-diag installed to $LW_INSTALL/quickjs/bin/qjs-diag"
+        )
+    handled=1;;&
+
+    "build-initramfs"|"all-initramfs"|"build"|"all"|"build-os")
+        mkdir -p "$LW_INSTALL/initramfs"
+
+        # First, create the base by copying a template with some device files.
+        # This base is created by tools/make-initramfs-base.sh but requires root to run.
+        cp "$LW_ROOT/patches/initramfs/initramfs-base.cpio" "$LW_INSTALL/initramfs/initramfs.cpio"
+
+        # Then copy BusyBox into it.
+        (
+            cd "$LW_INSTALL/busybox"
+            # The below command must run in the directory of the archive (i.e. read "find .").
+            find . -print0 | cpio --null -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+        )
+
+        # And copy a simple init too.
+        (
+            cd "$LW_ROOT/patches/initramfs/"
+            # The below command must run in the same directory as the root of the files it will copy.
+            echo "./init" | cpio -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+        )
+
+        # Add small compatibility shims used by guest tools.
+        (
+            cd "$LW_ROOT/patches/initramfs/"
+            echo "./bin/openssl" | cpio -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+        )
+
+        # Copy QuickJS into the initramfs (if built).
+        if [ -f "$LW_INSTALL/quickjs/bin/qjs" ]; then
+            (
+                cd "$LW_INSTALL/quickjs"
+                find . -print0 | cpio --null -ov --format=newc -A -O "$LW_INSTALL/initramfs/initramfs.cpio"
+            )
+        fi
+
+        # Finally we should zip it up so that it takes less space. This is the file to distribute.
+        rm -f "$LW_INSTALL/initramfs/initramfs.cpio.gz"
+        gzip "$LW_INSTALL/initramfs/initramfs.cpio"
+    handled=1;;&
+
+    ""|"help")
+        echo "Usage: $0 [action]"
+        echo "  where action is one of:"
+        echo "    all          -- Fetch and build everything."
+        echo "    fetch        -- Fetch everything."
+        echo "    build        -- Build everything (no fetching)."
+        echo "    all-xxx      -- Fetch and build component xxx."
+        echo "    fetch-xxx    -- Fetch component xxx."
+        echo "    build-xxx    -- Build component xxx (no fetching)."
+        echo "    build-tools  -- Build all build tool components (llvm)."
+        echo "    build-os     -- Build all OS software (excluding build tools)."
+        echo "  and components include (in order): llvm, kernel, musl, busybox-kernel-headers, busybox, quickjs, initramfs."
+        echo ""
+        echo "Fetch will download and patch the source. Build will configure, compile and install (to a folder in the workspace)."
+        echo ""
+        echo "To clean, simply delete the files in the src, build or install folders. Incremental re-building is possible."
+        echo ""
+        echo "The following variables are currently used. They can be overridden using environment variables with the same name."
+        echo "Paths are commonly automatically made absolute. If a relative path is given, it is evaluated in relation to the CWD."
+        echo "---------------"
+        echo "LW_WORKSPACE=$LW_WORKSPACE"
+        echo "LW_SRC=$LW_SRC"
+        echo "LW_BUILD=$LW_BUILD"
+        echo "LW_INSTALL=$LW_INSTALL"
+        echo "LW_GITFLAGS=$LW_GITFLAGS"
+        echo "---------------"
+        exit 1
+    handled=1;;&
+esac
+
+if ! [ "$handled" = 1 ]; then
+    # *) would not work above as ;;& would redirect all cases to *)
+    echo "Unknown action parameter: $1"
+    exit 1
+fi

@@ -1,0 +1,50 @@
+#!/bin/sh
+
+export PATH=/sbin:/bin:/usr/sbin:/usr/bin
+
+mount -t proc none /proc
+mount -t sysfs none /sys
+
+# Some runtime helpers expect HOME and a writable history location.
+mkdir -p /home
+export HOME=/home
+
+# Loopback must be up for localhost resolution and 127.0.0.1 traffic.
+/sbin/ifconfig lo 127.0.0.1 up 2>/dev/null
+
+# Configure the wasm virtual NIC using BusyBox applets that are available
+# in this rootfs. Do not use `ip` here because init may not have /sbin on PATH.
+# The interface can appear shortly after boot, so wait briefly.
+net_ready=0
+i=0
+while [ "$i" -lt 20 ]; do
+	if [ -d /sys/class/net/wasm0 ]; then
+		/sbin/ifconfig wasm0 10.0.0.2 netmask 255.255.255.0 up 2>/dev/null && \
+			/sbin/route add default gw 10.0.0.1 2>/dev/null && net_ready=1
+		break
+	fi
+	sleep 1
+	i=$((i + 1))
+done
+
+mkdir -p /etc
+cat > /etc/hosts <<'EOF'
+127.0.0.1 localhost
+::1 localhost
+EOF
+echo "nameserver 10.0.0.1" > /etc/resolv.conf
+
+echo
+echo "Welcome to Linux running on Wasm!"
+if [ "$net_ready" -eq 1 ]; then
+echo "  Network: wasm0 (10.0.0.2/24, gw 10.0.0.1)"
+fi
+if [ -x /bin/qjs ]; then
+echo "  QuickJS is available: qjs"
+fi
+echo "Known bugs:"
+echo "   * longjmp() does not work (not implemented yet)."
+echo "   * wget/nc crash (longjmp in BusyBox). Use qjs for HTTP."
+echo
+
+exec /sbin/init -s
