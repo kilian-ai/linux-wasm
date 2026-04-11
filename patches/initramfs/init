@@ -42,8 +42,8 @@ fi
 if [ -x /bin/qjs ]; then
 echo "  QuickJS is available: qjs"
 fi
-echo "Known bugs:"
-echo "   * longjmp() does not work (not implemented yet)."
+echo "Known issues:"
+echo "   * longjmp() calls _exit(1) — programs using it will terminate."
 echo "   * wget/nc crash (longjmp in BusyBox). Use qjs for HTTP."
 echo
 
